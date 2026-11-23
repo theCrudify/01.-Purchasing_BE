@@ -132,3 +132,10 @@ CREATE INDEX IF NOT EXISTS ix_tr_approval_task_open ON tr_approval_task ("Assign
 CREATE INDEX IF NOT EXISTS ix_tr_notification_queued ON tr_notification ("Id") WHERE "EmailStatus" = 'QUEUED';
 CREATE INDEX IF NOT EXISTS ix_mst_employee_superior ON mst_employee ("SuperiorUserId");
 CREATE INDEX IF NOT EXISTS ix_tr_document_deleted ON tr_document ("DeletedAt" DESC) WHERE "IsDeleted";
+
+-- ---------------------------------------------------------------------------
+-- Notifications list (document PublicId for links; never the numeric id)
+CREATE OR REPLACE VIEW vw_notification AS
+SELECT n."Id", n."PublicId", n."RecipientUserId", n."EventType", n."Title", n."Body", n."ReadAt", n."CreatedAt",
+       d."PublicId" AS "DocumentPublicId", d."DocType", d."DocNo"
+FROM tr_notification n LEFT JOIN tr_document d ON d."Id" = n."DocumentId";
