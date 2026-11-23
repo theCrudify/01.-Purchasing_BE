@@ -368,4 +368,34 @@ export class ProcurementRepository {
     }
     await this.q.query(`UPDATE tr_document SET "TotalAmount"=$2 WHERE "Id"=$1`, [docId, total.toFixed(2)])
   }
+
+  async clearSubtypeForUpdate(docId: number, docType: string) {
+    switch (docType) {
+      case 'PR':
+        await this.q.query(`DELETE FROM tr_purchase_request_line WHERE "PurchaseRequestId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_purchase_request WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'RFQ':
+        await this.q.query(`DELETE FROM tr_rfq_line WHERE "RfqId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_rfq_participant WHERE "RfqId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_rfq WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'QUO':
+        await this.q.query(`DELETE FROM tr_quotation_line WHERE "QuotationId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_quotation WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'CTR':
+        await this.q.query(`DELETE FROM tr_purchase_contract_line WHERE "ContractId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_purchase_contract WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'PO':
+        await this.q.query(`DELETE FROM tr_purchase_order_line WHERE "PurchaseOrderId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_purchase_order WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'GR':
+        await this.q.query(`DELETE FROM tr_goods_receipt_line WHERE "GoodsReceiptId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_goods_receipt WHERE "DocumentId"=$1`, [docId])
+        break
+    }
+  }
 }

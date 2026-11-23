@@ -394,4 +394,34 @@ export class FinanceRepository {
       [docId]
     )
   }
+
+  async clearSubtypeForUpdate(docId: number, docType: string) {
+    switch (docType) {
+      case 'CA':
+        await this.q.query(`DELETE FROM tr_expense_line WHERE "DocumentId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_cash_advance WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'STL':
+        await this.q.query(`DELETE FROM tr_expense_line WHERE "DocumentId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_settlement WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'RMB':
+        await this.q.query(`DELETE FROM tr_expense_line WHERE "DocumentId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_reimbursement WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'INV':
+        await this.q.query(`DELETE FROM tr_ap_invoice_line WHERE "InvoiceId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_ap_invoice WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'PAY':
+        await this.q.query(`DELETE FROM tr_payment_allocation WHERE "PaymentId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_payment_line WHERE "PaymentId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_payment WHERE "DocumentId"=$1`, [docId])
+        break
+      case 'ARI':
+        await this.q.query(`DELETE FROM tr_ar_invoice_line WHERE "InvoiceId"=$1`, [docId])
+        await this.q.query(`DELETE FROM tr_ar_invoice WHERE "DocumentId"=$1`, [docId])
+        break
+    }
+  }
 }
