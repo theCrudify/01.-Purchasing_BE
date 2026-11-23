@@ -144,9 +144,11 @@ describe.skipIf(!DB_URL)('workflow: document core + approval engine (real Postgr
     ;(env as any).RESEND_API_KEY = 're_test'
     const sent: string[] = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => { sent.push(JSON.parse(String(init!.body)).subject); return new Response('{}') })
+    await sql(`INSERT INTO tr_notification ("RecipientUserId","EventType","Title","EmailStatus") VALUES ($1,'TEST','Queued mail','QUEUED')`, [ids.req])
     const run = await client().call('POST', '/cron/dispatch', {}, { 'x-cron-secret': env.CRON_SECRET })
     expect(run.status).toBe(200)
     expect(run.json.data.sent).toBeGreaterThan(0)
+    expect(sent).toContain('Queued mail')
   })
 
   it('reassignment needs a superior; handover moves documents and raises a reassignment', async () => {
