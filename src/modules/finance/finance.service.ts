@@ -250,6 +250,93 @@ export class FinanceService {
     })
   }
 
+  updateCa(publicId: string, d: CaCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DepartmentId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.departmentId ?? null, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'CA')
+      await repo.insertCa(curr.id, this.actor.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateStl(publicId: string, d: StlCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "Remarks"=$3, "UpdatedBy"=$4, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'STL')
+      await repo.insertStl(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateRmb(publicId: string, d: RmbCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      const bpId = d.bpId ? await repo.resolveBpId(d.bpId) : null
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DepartmentId"=$3, "BpId"=$4, "CurrencyCode"=$5, "Remarks"=$6, "UpdatedBy"=$7, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.departmentId ?? null, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'RMB')
+      await repo.insertRmb(curr.id, this.actor.id, bpId, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateInv(publicId: string, d: InvCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      const bpId = await repo.resolveBpId(d.bpId)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DocDate"=$3, "BpId"=$4, "CurrencyCode"=$5, "Remarks"=$6, "UpdatedBy"=$7, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.invoiceDate, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'INV')
+      await repo.insertInv(curr.id, bpId, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updatePay(publicId: string, d: PayCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DocDate"=$3, "Remarks"=$4, "UpdatedBy"=$5, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.plannedDate, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'PAY')
+      await repo.insertPay(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateAri(publicId: string, d: AriCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new FinanceRepository(q)
+      const bpId = await repo.resolveBpId(d.bpId)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DocDate"=$3, "BpId"=$4, "CurrencyCode"=$5, "Remarks"=$6, "UpdatedBy"=$7, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.invoiceDate, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'ARI')
+      await repo.insertAri(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
   submit(publicId: string) {
     return this.db.session(this.actor, async (q) => {
       const d = await loadDocument(q, this.actor, publicId, { lock: true })
