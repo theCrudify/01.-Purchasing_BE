@@ -86,6 +86,13 @@ export class FinanceRepository {
     )
   }
 
+  listExpenseCategories() {
+    return this.q.query(
+      `SELECT "Id" AS id, "Code" AS code, "Name" AS name
+         FROM mst_expense_category WHERE NOT "IsDeleted" AND "IsActive" ORDER BY "Id"`
+    )
+  }
+
   async resolveBpId(bpPublicId: string) {
     const r = await this.q.query<{ id: number }>(
       `SELECT "Id" AS id FROM mst_business_partner WHERE "PublicId"=$1 AND NOT "IsDeleted"`,

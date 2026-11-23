@@ -6,6 +6,7 @@ import {
   caRoutes,
   coaLookupRoutes,
   companyBankLookupRoutes,
+  expenseCategoryLookupRoutes,
   invRoutes,
   payRoutes,
   rmbRoutes,
@@ -30,4 +31,5 @@ export const routes: [string, Hono<AppEnv, any, any>][] = [
   ['/coas', coaLookupRoutes],
   ['/transaction-types', txTypeLookupRoutes],
   ['/company-banks', companyBankLookupRoutes],
+  ['/expense-categories', expenseCategoryLookupRoutes],
 ]

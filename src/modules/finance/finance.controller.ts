@@ -9,6 +9,7 @@ export const financeController = {
   listCoas: async (c: C) => c.json(await svc(c).listCoas()),
   listTransactionTypes: async (c: C, module?: string) => c.json(await svc(c).listTransactionTypes(module)),
   listCompanyBanks: async (c: C) => c.json(await svc(c).listCompanyBanks()),
+  listExpenseCategories: async (c: C) => c.json(await svc(c).listExpenseCategories()),
 
   listCa: async (c: C, qs: any) => c.json(await svc(c).listCa(qs)),
   caLines: async (c: C, id: string) => c.json({ data: await svc(c).expenseLines(id) }),

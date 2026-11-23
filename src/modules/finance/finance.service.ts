@@ -26,6 +26,9 @@ export class FinanceService {
   listCompanyBanks() {
     return this.db.session(this.actor, async (q) => ({ data: await new FinanceRepository(q).listCompanyBanks() }))
   }
+  listExpenseCategories() {
+    return this.db.session(this.actor, async (q) => ({ data: await new FinanceRepository(q).listExpenseCategories() }))
+  }
 
   listCa(qs: ListQuery & { status?: string }) {
     return this.db.session(this.actor, (q) => new FinanceRepository(q).listCa(qs))

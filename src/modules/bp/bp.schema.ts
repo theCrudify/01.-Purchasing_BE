@@ -41,9 +41,44 @@ export const bpListQuery = listQuerySchema.extend({
   onboardingStatus: z.string().optional(),
 })
 
+export const bpAddressItem = z.object({
+  addressType: z.enum(['HEAD', 'BILLING', 'SHIPPING', 'BRANCH']).default('HEAD'),
+  line1: z.string().trim().min(2).max(200),
+  line2: z.string().trim().max(200).nullable().optional(),
+  city: z.string().trim().min(2).max(100),
+  province: z.string().trim().max(100).nullable().optional(),
+  postalCode: z.string().trim().max(10).nullable().optional(),
+  countryCode: z.string().trim().length(2).default('ID'),
+  isPrimary: z.boolean().default(false),
+})
+
+export const bpContactItem = z.object({
+  name: z.string().trim().min(2).max(150),
+  position: z.string().trim().max(100).nullable().optional(),
+  email: z.string().trim().max(254).nullable().optional(),
+  phone: z.string().trim().max(30).nullable().optional(),
+  isPrimary: z.boolean().default(false),
+})
+
+export const bpBankItem = z.object({
+  bankId: z.number().int().positive().default(1),
+  accountNo: z.string().trim().min(3).max(34),
+  accountHolderName: z.string().trim().min(2).max(150),
+  branchName: z.string().trim().max(100).nullable().optional(),
+  currencyCode: z.string().trim().length(3).default('IDR'),
+  iban: z.string().trim().max(34).nullable().optional(),
+  beneficiaryCountry: z.string().trim().length(2).default('ID'),
+  beneficiaryCity: z.string().trim().max(100).nullable().optional(),
+  beneficiaryAddress: z.string().trim().max(300).nullable().optional(),
+  bankAddress: z.string().trim().max(500).nullable().optional(),
+  citizenship: z.string().trim().max(20).default('RESIDENT'),
+  verificationStatus: z.enum(['PENDING', 'VERIFIED', 'REJECTED']).default('VERIFIED'),
+  isPrimary: z.boolean().default(false),
+})
+
 export const bpCreate = z
   .object({
-    bpCode: z.string().trim().min(1).max(20).optional(),
+    bpCode: z.string().trim().min(1).max(20).optional().nullable(),
     entityType: z.enum(['COMPANY', 'INDIVIDUAL']).default('COMPANY'),
     legalName: z.string().trim().min(2).max(200),
     tradeName: z.string().trim().max(200).nullable().optional(),
@@ -57,6 +92,9 @@ export const bpCreate = z
     defaultCurrencyCode: z.string().trim().length(3).default('IDR'),
     paymentTermId: z.number().int().positive().nullable().optional(),
     operationalStatus: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED', 'BLACKLISTED']).default('ACTIVE'),
+    addresses: z.array(bpAddressItem).optional(),
+    contacts: z.array(bpContactItem).optional(),
+    bankAccounts: z.array(bpBankItem).optional(),
   })
   .strict()
 

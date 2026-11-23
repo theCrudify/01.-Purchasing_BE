@@ -20,6 +20,10 @@ export const companyBankLookupRoutes = new Hono<AppEnv>()
   .use(requireAuth)
   .get('/', (c) => ctl.listCompanyBanks(c))
 
+export const expenseCategoryLookupRoutes = new Hono<AppEnv>()
+  .use(requireAuth)
+  .get('/', (c) => ctl.listExpenseCategories(c))
+
 export const caRoutes = new Hono<AppEnv>()
   .use(requireAuth, requireUserType('INTERNAL'))
   .get('/', listQ, (c) => ctl.listCa(c, c.req.valid('query')))
