@@ -1,0 +1,37 @@
+import type { Context } from 'hono'
+import type { AppEnv } from '../../env'
+import { FinanceService } from './finance.service'
+
+type C = Context<AppEnv>
+const svc = (c: C) => new FinanceService(c.get('db'), c.get('actor'))
+
+export const financeController = {
+  listCoas: async (c: C) => c.json(await svc(c).listCoas()),
+  listTransactionTypes: async (c: C, module?: string) => c.json(await svc(c).listTransactionTypes(module)),
+  listCompanyBanks: async (c: C) => c.json(await svc(c).listCompanyBanks()),
+
+  listCa: async (c: C, qs: any) => c.json(await svc(c).listCa(qs)),
+  caLines: async (c: C, id: string) => c.json({ data: await svc(c).expenseLines(id) }),
+  createCa: async (c: C, body: any) => c.json({ data: await svc(c).createCa(body) }, 201),
+
+  listStl: async (c: C, qs: any) => c.json(await svc(c).listStl(qs)),
+  stlLines: async (c: C, id: string) => c.json({ data: await svc(c).expenseLines(id) }),
+  createStl: async (c: C, body: any) => c.json({ data: await svc(c).createStl(body) }, 201),
+
+  listRmb: async (c: C, qs: any) => c.json(await svc(c).listRmb(qs)),
+  rmbLines: async (c: C, id: string) => c.json({ data: await svc(c).expenseLines(id) }),
+  createRmb: async (c: C, body: any) => c.json({ data: await svc(c).createRmb(body) }, 201),
+
+  listInv: async (c: C, qs: any) => c.json(await svc(c).listInv(qs)),
+  invLines: async (c: C, id: string) => c.json({ data: await svc(c).invLines(id) }),
+  createInv: async (c: C, body: any) => c.json({ data: await svc(c).createInv(body) }, 201),
+
+  listPay: async (c: C, qs: any) => c.json(await svc(c).listPay(qs)),
+  createPay: async (c: C, body: any) => c.json({ data: await svc(c).createPay(body) }, 201),
+
+  listAri: async (c: C, qs: any) => c.json(await svc(c).listAri(qs)),
+  ariLines: async (c: C, id: string) => c.json({ data: await svc(c).ariLines(id) }),
+  createAri: async (c: C, body: any) => c.json({ data: await svc(c).createAri(body) }, 201),
+
+  submit: async (c: C, id: string) => c.json({ data: await svc(c).submit(id) }),
+}

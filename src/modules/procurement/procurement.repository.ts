@@ -33,8 +33,18 @@ export class ProcurementRepository {
     return runList(this.q, cfg, qs, { where: conds, params })
   }
 
-  listPr(qs: ListQuery & { status?: string }) {
-    return this.listDoc(prList, qs)
+  listPr(qs: ListQuery & { status?: string; purchaseClassCode?: string }) {
+    const conds = [`NOT "IsDeleted"`]
+    const params: unknown[] = []
+    if (qs.status) {
+      params.push(qs.status)
+      conds.push(`"Status"=$${params.length}`)
+    }
+    if (qs.purchaseClassCode) {
+      params.push(qs.purchaseClassCode)
+      conds.push(`"PurchaseClassCode"=$${params.length}`)
+    }
+    return runList(this.q, prList, qs, { where: conds, params })
   }
   listRfq(qs: ListQuery & { status?: string }) {
     return this.listDoc(rfqList, qs)

@@ -4,6 +4,8 @@ import { isoDate } from '../_master/shared'
 
 export const docListQuery = listQuerySchema.extend({
   status: z.string().optional(),
+  purchaseClassCode: z.string().optional(),
+  purpose: z.string().optional(),
 })
 export const docIdParam = z.object({ id: z.string().uuid() })
 
@@ -23,6 +25,7 @@ export const prList: ListConfig = {
     departmentName: 'DepartmentName',
     requiredDate: 'RequiredDate',
     purchaseClassId: 'PurchaseClassId',
+    purchaseClassCode: 'PurchaseClassCode',
     purchaseClassName: 'PurchaseClassName',
     costCenterName: 'CostCenterName',
     sourcingMethod: 'SourcingMethod',
