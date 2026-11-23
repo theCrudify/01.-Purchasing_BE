@@ -86,8 +86,8 @@ SELECT n."SeriesCode" || '.' || n."PeriodKey" AS "Key", n.* FROM sys_number_seri
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kpin_app') THEN
-    GRANT SELECT ON vw_exchange_rate, vw_item, vw_category, vw_form_note, vw_budget, vw_number_series TO kpin_app;
-    GRANT UPDATE ON vw_number_series TO kpin_app;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'purchasing_app') THEN
+    GRANT SELECT ON vw_exchange_rate, vw_item, vw_category, vw_form_note, vw_budget, vw_number_series TO purchasing_app;
+    GRANT UPDATE ON vw_number_series TO purchasing_app;
   END IF;
 END $$;

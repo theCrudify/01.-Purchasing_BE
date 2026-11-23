@@ -20,12 +20,12 @@ ON CONFLICT DO NOTHING;
 -- Fallback status history: the ported guards (01xx) write hist_document_status from their own trigger.
 -- This one is created only when no other tr_document trigger does it, so there is never a double entry.
 CREATE OR REPLACE FUNCTION fn_wf_status_hist() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE actor bigint := NULLIF(current_setting('kpin.user_id', true), '')::bigint;
+DECLARE actor bigint := NULLIF(current_setting('purchasing.user_id', true), '')::bigint;
 BEGIN
   IF TG_OP = 'INSERT' OR NEW."Status" IS DISTINCT FROM OLD."Status" THEN
-    IF actor IS NULL THEN RAISE EXCEPTION 'Document status changes require the acting user (kpin.user_id).'; END IF;
+    IF actor IS NULL THEN RAISE EXCEPTION 'Document status changes require the acting user (purchasing.user_id).'; END IF;
     INSERT INTO hist_document_status ("DocumentId","FromStatus","ToStatus","ActorUserId","Remarks")
-    VALUES (NEW."Id", CASE WHEN TG_OP = 'UPDATE' THEN OLD."Status" END, NEW."Status", actor, NULLIF(current_setting('kpin.remarks', true), ''));
+    VALUES (NEW."Id", CASE WHEN TG_OP = 'UPDATE' THEN OLD."Status" END, NEW."Status", actor, NULLIF(current_setting('purchasing.remarks', true), ''));
   END IF;
   RETURN NULL;
 END $$;

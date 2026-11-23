@@ -190,7 +190,7 @@ SELECT u."Id", 'EMP-0001',
        (SELECT "Id" FROM mst_department WHERE NOT "IsDeleted" ORDER BY "Id" LIMIT 1),
        'Purchasing & Finance Administrator',
        '2025-01-01', true
-  FROM mst_user u WHERE u."Email"='admin@kpin.local'
+  FROM mst_user u WHERE u."Email"='admin@purchasing.local'
 ON CONFLICT ("UserId") DO NOTHING;
 
 -- 5. Update vw_doc_pr to include PurchaseClassCode (so Purchase Request Raw Material can filter by RAW_MAT)
@@ -322,7 +322,7 @@ DECLARE
   v_tpl_id int;
   v_dt text;
 BEGIN
-  SELECT "Id" INTO v_admin_id FROM mst_user WHERE "Email" = 'admin@kpin.local' LIMIT 1;
+  SELECT "Id" INTO v_admin_id FROM mst_user WHERE "Email" = 'admin@purchasing.local' LIMIT 1;
   IF v_admin_id IS NULL THEN
     SELECT "Id" INTO v_admin_id FROM mst_user ORDER BY "Id" LIMIT 1;
   END IF;

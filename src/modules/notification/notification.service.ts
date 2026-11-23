@@ -24,7 +24,7 @@ export async function dispatchQueued(db: Db, cfg: Config, limit = 50) {
   let sent = 0, failed = 0
   for (const n of batch) {
     const path = n.docType && n.docPublicId ? (docTypeHooks(n.docType).path?.(n.docPublicId) ?? '/approvals') : '/notifications'
-    const r = await sendMail(cfg, { to: n.email, subject: n.title, html: mailLayout(n.title, [`Hello ${n.name},`, ...(n.body ? [n.body] : [])], { href: `${base}${path}`, label: 'Open in KPIN' }) })
+    const r = await sendMail(cfg, { to: n.email, subject: n.title, html: mailLayout(n.title, [`Hello ${n.name},`, ...(n.body ? [n.body] : [])], { href: `${base}${path}`, label: 'Open in Purchasing Portal' }) })
       .catch((e) => ({ ok: false, error: (e as Error).message }))
     await db.session(SYSTEM, (q) => new NotificationRepository(q).markSent(n.id, r.ok ? null : (r.error ?? 'send failed')))
     r.ok ? sent++ : failed++

@@ -44,8 +44,8 @@ export function resetMail(cfg: Config, to: string, code: string, invite: boolean
   const href = `${base}/forgot-password?${new URLSearchParams({ email: to, code })}`
   const min = invite ? INVITE_MIN : RESET_MIN
   return sendMail(cfg, invite
-    ? { to, subject: 'Your KPIN account', html: mailLayout('Welcome to KPIN', [`An account was created for ${to}.`, `Set your password with code ${code} (valid ${min} minutes). If it expires, use "Forgot password" on the sign-in page.`], { href, label: 'Set your password' }) }
-    : { to, subject: 'KPIN password reset code', html: mailLayout('Password reset', [`Your code is ${code}. It is valid for ${min} minutes.`, 'If you did not ask for this, ignore this e-mail.'], { href, label: 'Reset your password' }) })
+    ? { to, subject: 'Your Purchasing Portal account', html: mailLayout('Welcome to Purchasing Portal', [`An account was created for ${to}.`, `Set your password with code ${code} (valid ${min} minutes). If it expires, use "Forgot password" on the sign-in page.`], { href, label: 'Set your password' }) }
+    : { to, subject: 'Purchasing Portal password reset code', html: mailLayout('Password reset', [`Your code is ${code}. It is valid for ${min} minutes.`, 'If you did not ask for this, ignore this e-mail.'], { href, label: 'Reset your password' }) })
 }
 
 /** Public 2-step forgot-password. Every answer is identical whether or not the e-mail exists (no user enumeration). */

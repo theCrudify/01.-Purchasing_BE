@@ -23,7 +23,7 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- Status moves must follow mst_status_transition; currency / rate / BP are locked after DRAFT; deleted documents are frozen.
 CREATE OR REPLACE FUNCTION fn_document_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF current_setting('kpin.recalc', true) = '1' AND pg_has_role(current_user, (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'MEMBER') THEN
+  IF current_setting('purchasing.recalc', true) = '1' AND pg_has_role(current_user, (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'MEMBER') THEN
     RETURN NEW; -- data migration by the owner only
   END IF;
   IF OLD."IsDeleted" AND NEW."IsDeleted" THEN
@@ -62,14 +62,14 @@ DROP TRIGGER IF EXISTS trg_document_rate ON tr_document;
 CREATE TRIGGER trg_document_rate BEFORE INSERT OR UPDATE OF "CurrencyCode", "ExchangeRate", "DocDate", "TotalAmount", "Status" ON tr_document
   FOR EACH ROW EXECUTE FUNCTION fn_document_rate();
 
--- Every status change is recorded with the actor and kpin.remarks.
+-- Every status change is recorded with the actor and purchasing.remarks.
 CREATE OR REPLACE FUNCTION fn_document_status_history() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'INSERT' OR NEW."Status" IS DISTINCT FROM OLD."Status" THEN
     INSERT INTO hist_document_status ("DocumentId","FromStatus","ToStatus","ActorUserId","Remarks")
     VALUES (NEW."Id", CASE WHEN TG_OP = 'UPDATE' THEN OLD."Status" END, NEW."Status",
-            COALESCE(NULLIF(current_setting('kpin.user_id', true), '')::bigint, NEW."UpdatedBy", NEW."OwnerUserId"),
-            NULLIF(left(current_setting('kpin.remarks', true), 1000), ''));
+            COALESCE(NULLIF(current_setting('purchasing.user_id', true), '')::bigint, NEW."UpdatedBy", NEW."OwnerUserId"),
+            NULLIF(left(current_setting('purchasing.remarks', true), 1000), ''));
   END IF;
   RETURN NEW;
 END $$;

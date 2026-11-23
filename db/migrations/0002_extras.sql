@@ -9,10 +9,10 @@ CREATE OR REPLACE FUNCTION fn_set_updated_at() RETURNS trigger LANGUAGE plpgsql 
 BEGIN NEW."UpdatedAt" := now(); RETURN NEW; END $$;
 
 -- Generic audit: every INSERT/UPDATE/DELETE on mst_* and tr_* goes to hist_audit_log.
--- Actor comes from set_config('kpin.user_id', ..., true), set by the API at the start of each transaction.
+-- Actor comes from set_config('purchasing.user_id', ..., true), set by the API at the start of each transaction.
 CREATE OR REPLACE FUNCTION fn_audit() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE r jsonb := to_jsonb(COALESCE(NEW, OLD)); k text; ch jsonb;
-        actor bigint := NULLIF(current_setting('kpin.user_id', true), '')::bigint;
+        actor bigint := NULLIF(current_setting('purchasing.user_id', true), '')::bigint;
 BEGIN
   k := COALESCE(r->>'Id', r->>'DocumentId', r->>'PublicId', r->>'Code', r::text);
   IF TG_OP = 'UPDATE' THEN

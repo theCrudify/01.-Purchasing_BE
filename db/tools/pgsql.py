@@ -22,12 +22,12 @@ Trigger blocks (`expand_triggers`) keep the T-SQL shape of the originals — set
   * UPDATE(Col) (T-SQL "column in SET list") becomes "the value changed in some row" for UPDATE,
     true for INSERT, false for DELETE.
   * THROW n, 'msg';  ->  RAISE EXCEPTION 'E<n>: msg' USING ERRCODE = 'P0001';
-  * Direct recursion is suppressed like SQL Server's RECURSIVE_TRIGGERS OFF: the GUC kpin.trg holds
+  * Direct recursion is suppressed like SQL Server's RECURSIVE_TRIGGERS OFF: the GUC purchasing.trg holds
     the trigger currently running; a firing caused by that same trigger's own statements is skipped,
     indirect chains (A -> B -> A) still run.
   * All trigger functions are SECURITY DEFINER (owner): they see every row (RLS is bypassed for the
     owner, like TRIGGER_NESTLEVEL() > 0 in the original predicates) and may write tables the
-    kpin_app / kpin_portal roles cannot.
+    purchasing_app / purchasing_portal roles cannot.
 """
 import os, re
 
@@ -115,15 +115,15 @@ def trigger(name, table, events, declare, body, comment=''):
         b = throw(b)
         assert len(fn) <= 63, fn
         out.append(f"""CREATE OR REPLACE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
-DECLARE v_prev text := current_setting('kpin.trg', true);
+DECLARE v_prev text := current_setting('purchasing.trg', true);
 {declare.strip()}
 BEGIN
   IF v_prev = '{name}' THEN RETURN NULL; END IF;   -- own statement (no direct recursion)
-  PERFORM set_config('kpin.trg', '{name}', true);
+  PERFORM set_config('purchasing.trg', '{name}', true);
   <<body>> BEGIN
 {indent(b.strip(), 4)}
   END body;
-  PERFORM set_config('kpin.trg', COALESCE(v_prev, ''), true);
+  PERFORM set_config('purchasing.trg', COALESCE(v_prev, ''), true);
   RETURN NULL;
 END $fn$;
 DROP TRIGGER IF EXISTS {fn} ON {table};

@@ -69,7 +69,7 @@ export class DocumentRepository {
     return this.q.query<{ status: string }>(`SELECT "Status" AS status FROM tr_approval_request WHERE "DocumentId"=$1 ORDER BY "RoundNo" DESC LIMIT 1`, [docId]).then((r) => r[0]?.status)
   }
 
-  async setRemarks(remarks: string) { await this.q.query(`SELECT set_config('kpin.remarks', $1, true)`, [remarks]) }
+  async setRemarks(remarks: string) { await this.q.query(`SELECT set_config('purchasing.remarks', $1, true)`, [remarks]) }
 
   async setStatus(id: number, to: string, actorId: number, extra: { cancelReason?: string } = {}) {
     await this.q.query(

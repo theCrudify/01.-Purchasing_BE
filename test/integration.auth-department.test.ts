@@ -48,9 +48,9 @@ describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
     expect((await v.get('/api/departments')).status).toBe(200)
     expect((await v.post('/api/departments', { code: 'T-X', name: 'x' })).status).toBe(403)
 
-    const stolen = v.jar.get('kpin_rt')!
+    const stolen = v.jar.get('purchasing_rt')!
     expect((await v.post('/api/auth/refresh')).status).toBe(200)
-    const attacker = client(); attacker.jar.set('kpin_rt', stolen)
+    const attacker = client(); attacker.jar.set('purchasing_rt', stolen)
     expect((await attacker.post('/api/auth/refresh')).status).toBe(401) // reuse → whole session revoked
     expect((await v.post('/api/auth/refresh')).status).toBe(401)
   })

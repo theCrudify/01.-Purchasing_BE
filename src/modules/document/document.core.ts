@@ -62,7 +62,7 @@ export async function assignNumber(q: Queryable, actor: WfActor, id: number) {
 }
 
 /**
- * Move the status along mst_status_transition. `remarks` goes to hist_document_status (via kpin.remarks).
+ * Move the status along mst_status_transition. `remarks` goes to hist_document_status (via purchasing.remarks).
  * Leaving DRAFT assigns the number. Approval-bound moves (PENDING_APPROVAL in / out) must go through the approval engine.
  */
 export async function changeStatus(q: Queryable, actor: WfActor, id: number, to: string, opts: { remarks?: string; cancelReason?: string; viaApproval?: boolean } = {}) {

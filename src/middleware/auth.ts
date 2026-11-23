@@ -5,7 +5,7 @@ import { unauthorized, forbidden } from '../core/errors'
 import { verifyAccessToken } from '../modules/auth/auth.tokens'
 import { AuthRepository } from '../modules/auth/auth.repository'
 
-export const ACCESS_COOKIE = 'kpin_at'
+export const ACCESS_COOKIE = 'purchasing_at'
 
 /** Valid JWT + live session + ACTIVE user → c.var.actor (permissions loaded fresh, so revocation is immediate). */
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {

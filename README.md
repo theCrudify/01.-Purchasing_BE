@@ -1,6 +1,6 @@
 # 04.-Purchasing_BE
 
-Backend **KPIN Purchasing + Portal Vendor** — Hono + Postgres (Neon). Pasangan FE: `04.-Purchasing_FE`.
+Backend **Purchasing Portal + Vendor Portal** — Hono + Postgres (Neon). Pasangan FE: `04.-Purchasing_FE`.
 Desain database: `../02. KPIN_DB_REDESIGN`. Aturan kode wajib: **CONVENTIONS.md**.
 
 ## Scope
@@ -23,10 +23,10 @@ test/                        vitest (unit + integrasi ke Postgres asli)
 ```bash
 npm install
 cp .env.example .env                    # DATABASE_URL, JWT_SECRET, ALLOWED_ORIGINS (= origin FE)
-./db/reset-local.sh kpin                # Postgres lokal :54329
-ADMIN_EMAIL=admin@kpin.local ADMIN_PASSWORD='ganti-ini-12char' npm run seed:admin
+./db/reset-local.sh purchasing                # Postgres lokal :54329
+ADMIN_EMAIL=admin@purchasing.local ADMIN_PASSWORD='ganti-ini-12char' npm run seed:admin
 npm run dev                             # http://localhost:3918
-TEST_DATABASE_URL=postgresql://postgres@localhost:54329/kpin npm test
+TEST_DATABASE_URL=postgresql://postgres@localhost:54329/purchasing npm test
 ```
 
 ## Deploy gratis

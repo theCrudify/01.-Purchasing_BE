@@ -1,5 +1,5 @@
 // =====================================================================
-// KPIN — Integrated Business Partner, Procurement & Approval Database
+// Purchasing Portal — Integrated Business Partner, Procurement & Approval Database
 // Provider : SQL Server 2019+
 //
 // Table prefixes
@@ -291,7 +291,7 @@ model Employee {
 // =====================================================================
 
 /// ISO 4217 currencies (all of them, seeded from the official SIX list — sql/seed_currency.sql).
-/// Base / functional currency of KPIN is IDR.
+/// Base / functional currency of Purchasing Portal is IDR.
 model Currency {
   Code        String  @id @db.Char(3) /// ISO 4217 alpha, e.g. IDR
   NumericCode String  @unique @db.Char(3) /// ISO 4217 numeric, e.g. 360
@@ -2473,7 +2473,7 @@ model Notification {
 }
 
 /// Handover of one person's work to another (resign, transfer, long leave).
-/// Backend: insert this row (OPEN) → EXEC sp_set_session_context 'kpin.handover_id', <Id> →
+/// Backend: insert this row (OPEN) → EXEC sp_set_session_context 'purchasing.handover_id', <Id> →
 /// move documents / mappings / PIC / org roles (approval tasks move only via an APPROVED tr_approval_reassignment) → set COMPLETED → clear the context,
 /// all in ONE transaction. Every moved item is logged to hist_handover_item by trigger,
 /// and while OPEN the database rejects moving anything to anyone but ToUserId.

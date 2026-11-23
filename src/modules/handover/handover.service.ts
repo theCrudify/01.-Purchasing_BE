@@ -25,7 +25,7 @@ export class HandoverService {
       if (from.id === to.id) throw rule('The successor must be a different user')
       if (to.status !== 'ACTIVE') throw rule('The successor must be an active user')
       const h = await r.create({ from: from.id, to: to.id, reason: d.reason, effectiveDate: d.effectiveDate, remarks: d.remarks, executedBy: this.actor.id })
-      await q.query(`SELECT set_config('kpin.handover_id', $1, true)`, [String(h)])
+      await q.query(`SELECT set_config('purchasing.handover_id', $1, true)`, [String(h)])
       const counts = {
         documents: await r.documents(h, from.id, to.id),
         mappings: await r.mappings(h, from.id, to.id),
@@ -42,7 +42,7 @@ export class HandoverService {
         reassignment = await requestReassignment(q, this.actor, { from: from.id, to: to.id, approver: approver.id, reason, remarks: d.remarks?.trim() || `Handover ${d.reason}`, handoverId: h })
       }
       await r.complete(h, counts)
-      await q.query(`SELECT set_config('kpin.handover_id', '', true)`)
+      await q.query(`SELECT set_config('purchasing.handover_id', '', true)`)
       return { id: h, ...counts, reassignment }
     })
   }

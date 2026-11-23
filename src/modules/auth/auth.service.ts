@@ -65,7 +65,7 @@ export class AuthService {
       if (!u.ExternalAuthId) await repo.bindExternalId(u.UserId, oid)
       return this.openSession(repo, u.UserId, ip, ua, 'ENTRA_ID')
     })
-    if (!out) throw unauthorized('No active KPIN account for this Microsoft identity')
+    if (!out) throw unauthorized('No active Purchasing Portal account for this Microsoft identity')
     return out
   }
 

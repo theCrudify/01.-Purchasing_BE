@@ -9,7 +9,7 @@ const authority = (cfg: Config) => `https://login.microsoftonline.com/${encodeUR
 export const redirectUri = (cfg: Config) => `${(cfg.APP_URL ?? cfg.ALLOWED_ORIGINS.split(',')[0]!).trim().replace(/\/$/, '')}/api/auth/entra/callback`
 const key = (s: string) => new TextEncoder().encode(s)
 const rand = () => base64url.encode(crypto.getRandomValues(new Uint8Array(32)))
-const FLOW_AUD = 'kpin:entra-flow'
+const FLOW_AUD = 'purchasing:entra-flow'
 
 const jwks = new Map<string, ReturnType<typeof createRemoteJWKSet>>()
 const tenantKeys = (cfg: Config) => {

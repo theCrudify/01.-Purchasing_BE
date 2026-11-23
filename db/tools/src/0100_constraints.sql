@@ -1,35 +1,35 @@
 /* =====================================================================
-   KPIN db-port 0100 — session helpers, CHECK constraints, partial unique indexes, read views.
+   Purchasing Portal db-port 0100 — session helpers, CHECK constraints, partial unique indexes, read views.
    Port of KPIN_DB_REDESIGN/prisma/sql/constraints.sql (SQL Server). Idempotent.
    Template: db/tools/src/0100_constraints.sql (bare PascalCase columns) -> db/tools/build.py.
    ===================================================================== */
 
 /* ---------------------------------------------------------------------
-   0. Session helpers (SESSION_CONTEXT -> set_config('kpin.*', v, true) by apps/api/src/core/db.ts)
+   0. Session helpers (SESSION_CONTEXT -> set_config('purchasing.*', v, true) by apps/api/src/core/db.ts)
    --------------------------------------------------------------------- */
 
 -- role the statement runs as, also inside SECURITY DEFINER functions (the `role` GUC keeps the
 -- caller's SET LOCAL ROLE; 'none' = no SET ROLE, i.e. the login itself)
-CREATE OR REPLACE FUNCTION kpin_outer_role() RETURNS text LANGUAGE sql STABLE AS $$
+CREATE OR REPLACE FUNCTION purchasing_outer_role() RETURNS text LANGUAGE sql STABLE AS $$
   SELECT CASE WHEN current_setting('role') = 'none' THEN session_user::text ELSE current_setting('role') END
 $$;
 
 -- logged-in user (TRY_CAST semantics: anything that is not a number counts as missing)
-CREATE OR REPLACE FUNCTION kpin_actor() RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT CASE WHEN current_setting('kpin.user_id', true) ~ '^[0-9]{1,18}$' THEN current_setting('kpin.user_id', true)::bigint END
+CREATE OR REPLACE FUNCTION purchasing_actor() RETURNS bigint LANGUAGE sql STABLE AS $$
+  SELECT CASE WHEN current_setting('purchasing.user_id', true) ~ '^[0-9]{1,18}$' THEN current_setting('purchasing.user_id', true)::bigint END
 $$;
 
--- portal (business partner) actor: context says BP, or the statement runs as kpin_portal
-CREATE OR REPLACE FUNCTION kpin_is_bp() RETURNS boolean LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(current_setting('kpin.user_type', true), '') = 'BP' OR kpin_outer_role() = 'kpin_portal'
+-- portal (business partner) actor: context says BP, or the statement runs as purchasing_portal
+CREATE OR REPLACE FUNCTION purchasing_is_bp() RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(current_setting('purchasing.user_type', true), '') = 'BP' OR purchasing_outer_role() = 'purchasing_portal'
 $$;
 
--- maintenance bypass (kpin.recalc set): honoured only for the database owner / superuser, never when
--- the statement runs as kpin_app / kpin_portal (original: IS_MEMBER('db_owner'))
-CREATE OR REPLACE FUNCTION kpin_bypass() RETURNS boolean LANGUAGE sql STABLE AS $$
-  SELECT COALESCE(current_setting('kpin.recalc', true), '') NOT IN ('', '0')
-     AND kpin_outer_role() NOT IN ('kpin_app', 'kpin_portal')
-     AND pg_has_role(kpin_outer_role(), (SELECT c.relowner FROM pg_class c WHERE c.oid = 'public.tr_document'::regclass), 'USAGE')
+-- maintenance bypass (purchasing.recalc set): honoured only for the database owner / superuser, never when
+-- the statement runs as purchasing_app / purchasing_portal (original: IS_MEMBER('db_owner'))
+CREATE OR REPLACE FUNCTION purchasing_bypass() RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(current_setting('purchasing.recalc', true), '') NOT IN ('', '0')
+     AND purchasing_outer_role() NOT IN ('purchasing_app', 'purchasing_portal')
+     AND pg_has_role(purchasing_outer_role(), (SELECT c.relowner FROM pg_class c WHERE c.oid = 'public.tr_document'::regclass), 'USAGE')
 $$;
 
 /* ---------------------------------------------------------------------

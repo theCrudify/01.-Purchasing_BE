@@ -8,7 +8,7 @@ INSERT INTO mst_permission ("Code","Module","Name") VALUES
  ('SECURITY.MANAGE','SECURITY','Manage IP allow list and force-logout sessions')
 ON CONFLICT ("Code") DO NOTHING;
 
--- SSO: one KPIN user per Entra object id (bound on first SSO login)
+-- SSO: one Purchasing Portal user per Entra object id (bound on first SSO login)
 CREATE UNIQUE INDEX IF NOT EXISTS ux_user_credential_external_id ON sys_user_credential ("ExternalAuthId") WHERE "ExternalAuthId" IS NOT NULL;
 
 -- IP allow list changes are audited like master data

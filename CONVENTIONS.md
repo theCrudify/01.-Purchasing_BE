@@ -1,4 +1,4 @@
-# KPIN implementation conventions (read before writing any module)
+# Purchasing Portal implementation conventions (read before writing any module)
 
 Scope: **Purchasing + vendor portal** (identity, purchasing masters, approval, Business Partner + vendor registration/verification, PR → RFQ/Quotation → Contract → PO → GR/return, budget). Out of scope: AP invoice, payment, cash advance/settlement/reimbursement, AR, journal.
 Parity references: `OLD/00. EXP_V1` (internal purchasing) and `OLD/00. Supplier Portal` (vendor side).
@@ -16,7 +16,7 @@ Two separate git repos under `/home/jidan/Documents/00. IDS_DEV/02. KPIN/`: **BE
 ## Local database
 A throwaway Postgres 18 runs on `localhost:54329`, user `postgres`, no password (trust).
 - `BE/db/reset-local.sh <your_db_name>` rebuilds a DB from all migrations in filename order.
-  Use **your own DB name** (e.g. `kpin_master`) so parallel work doesn't collide.
+  Use **your own DB name** (e.g. `purchasing_master`) so parallel work doesn't collide.
   `INCLUDE='^03'` limits to your migrations if someone else's WIP file is broken (0001/0002 always run).
 - Tests: `cd BE && TEST_DATABASE_URL=postgresql://postgres@localhost:54329/<db> npx vitest run test/<yourfile>`.
 - **Never** stop/restart the Postgres server, never drop databases you didn't create, never use `pkill`/`killall` (other apps run on this machine — kill only PIDs you started).
@@ -45,7 +45,7 @@ Each group adds: permission codes it uses (`INSERT INTO mst_permission … ON CO
 - Masters: extend `CrudRepository` / `CrudService`, use `crudController` + `crudRoutes`; add hooks/extra routes for custom rules.
 - Validation: always `validate('json'|'query'|'param', schema)` from `core/validate.ts` (uniform 422). Use `.strict()` on bodies (no mass assignment).
 - Errors: throw `HttpError` / `notFound` / `forbidden` / `conflict` from `core/errors.ts`. Postgres errors 23505→409, 23503/23514/P0001→422 are mapped by the error handler, so DB rules surface cleanly (`RAISE EXCEPTION` in triggers → 422 with the message).
-- Every DB call goes through `db.session(actor, fn)`: one transaction, sets `kpin.user_id` / `kpin.user_type` (and extra keys like `kpin.remarks` via the 3rd arg) with `set_config(..., true)`.
+- Every DB call goes through `db.session(actor, fn)`: one transaction, sets `purchasing.user_id` / `purchasing.user_type` (and extra keys like `purchasing.remarks` via the 3rd arg) with `set_config(..., true)`.
 - Security: internal routes `requireUserType('INTERNAL')`; portal routes `requireUserType('BP')` **and** the service must scope every query to the BP(s) the user belongs to (`mst_bp_user`) — never trust a bpId from the client. Look up documents by `PublicId` and verify ownership (anti-IDOR). Rate-limit public endpoints (`rateLimit(...)`).
 - Files: `core/storage.ts` (`saveFile(q, userId, file)` → validated, stored in Postgres `sys_file_blob`; `readFile`, `fileResponse`). Upload with multipart (`c.req.parseBody()`), authorise download by checking the owning record first.
 - Email: `core/mailer.ts` (`sendMail(cfg, …)` via Resend HTTP free tier; logs when no key). Config via `c.get('cfg')` (`BE/src/env.ts`); add new env keys there.

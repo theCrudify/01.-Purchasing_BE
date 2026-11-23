@@ -9,8 +9,8 @@ import { ACCESS_TTL_S, REFRESH_TTL_S } from './auth.tokens'
 import type { LoginInput } from './auth.schema'
 import { entraEnabled, finishFlow, startFlow } from './auth.entra'
 
-const REFRESH_COOKIE = 'kpin_rt'
-const FLOW_COOKIE = 'kpin_oidc'
+const REFRESH_COOKIE = 'purchasing_rt'
+const FLOW_COOKIE = 'purchasing_oidc'
 const safeNext = (n: string | undefined) => (n && n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/\\') ? n : '/dashboard')
 const client = (c: Context<AppEnv>) => [clientIp(c), c.req.header('user-agent') ?? null] as const
 const svc = (c: Context<AppEnv>) => new AuthService(c.get('db'), c.get('cfg').JWT_SECRET)

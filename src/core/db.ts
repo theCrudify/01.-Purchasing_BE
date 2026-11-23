@@ -9,7 +9,7 @@ export interface Queryable { query<T = Record<string, unknown>>(sql: string, par
 export type SessionActor = Pick<Actor, 'id' | 'userType'> | { id: null; userType: 'SYSTEM' }
 
 export interface Db {
-  /** One transaction; kpin.user_id / kpin.user_type are set LOCAL so pooled connections never leak context. */
+  /** One transaction; purchasing.user_id / purchasing.user_type are set LOCAL so pooled connections never leak context. */
   session<T>(actor: SessionActor, fn: (q: Queryable) => Promise<T>, extra?: Record<string, string>): Promise<T>
   close(): Promise<void>
 }
@@ -36,7 +36,7 @@ export function createDb(connectionString: string): Db {
       const q: Queryable = { query: async (sql, params = []) => (await client.query(sql, params as any[])).rows }
       try {
         await client.query('BEGIN')
-        const ctx: Record<string, string> = { 'kpin.user_id': actor.id == null ? '' : String(actor.id), 'kpin.user_type': actor.userType, ...extra }
+        const ctx: Record<string, string> = { 'purchasing.user_id': actor.id == null ? '' : String(actor.id), 'purchasing.user_type': actor.userType, ...extra }
         const keys = Object.keys(ctx)
         await client.query(`SELECT ${keys.map((_, i) => `set_config($${i * 2 + 1}, $${i * 2 + 2}, true)`).join(', ')}`, keys.flatMap((k) => [k, ctx[k]]))
         const out = await fn(q)
