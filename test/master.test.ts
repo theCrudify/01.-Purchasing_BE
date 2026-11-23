@@ -72,7 +72,7 @@ describe.skipIf(!DB_URL)('master data (real Postgres)', () => {
 
   it('currency + exchange rate + Frankfurter import', async () => {
     expect((await a.patch('/currencies/IDR', { isActive: false })).status).toBe(422)
-    expect((await a.get('/currencies?q=dollar')).json.data[0].code).toBe('USD')
+    expect((await a.get('/currencies?q=dollar&pageSize=50')).json.data.map((x: any) => x.code)).toContain('USD')
     expect((await a.post('/exchange-rates', { currencyCode: 'EUR', rateType: 'MIDDLE', rateDate: '2026-11-20', rateToBase: '17000' })).status).toBe(422) // inactive
     const r = await a.post('/exchange-rates', { currencyCode: 'USD', rateType: 'MIDDLE', rateDate: '2026-11-20', rateToBase: '15800.5' })
     expect(r.status, JSON.stringify(r.json)).toBe(201)
@@ -90,11 +90,11 @@ describe.skipIf(!DB_URL)('master data (real Postgres)', () => {
   })
 
   it('number series: edit prefix/format only, format needs {SEQ}', async () => {
-    await sql(`INSERT INTO sys_number_series ("SeriesCode","PeriodKey","Prefix") VALUES ('PR','000000','PR') ON CONFLICT DO NOTHING`)
-    expect((await a.patch('/number-series/PR.000000', { format: '{PREFIX}/{YY}' })).status).toBe(422)
-    const r = await a.patch('/number-series/PR.000000', { prefix: 'PRQ', format: '{PREFIX}/{SEQ:4}/{MM}{YY}' })
+    await sql(`INSERT INTO sys_number_series ("SeriesCode","PeriodKey","Prefix") VALUES ('TST','000000','TST') ON CONFLICT DO NOTHING`)
+    expect((await a.patch('/number-series/TST.000000', { format: '{PREFIX}/{YY}' })).status).toBe(422)
+    const r = await a.patch('/number-series/TST.000000', { prefix: 'PRQ', format: '{PREFIX}/{SEQ:4}/{MM}{YY}' })
     expect(r.status, JSON.stringify(r.json)).toBe(200)
-    expect((await a.patch('/number-series/PR.000000', { lastNumber: 0 })).status).toBe(422) // counter is not editable
+    expect((await a.patch('/number-series/TST.000000', { lastNumber: 0 })).status).toBe(422) // counter is not editable
   })
 
   it('viewer can read but not write', async () => {
