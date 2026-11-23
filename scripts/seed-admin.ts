@@ -3,7 +3,7 @@ import pg from 'pg'
 import bcrypt from 'bcryptjs'
 
 const { DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD } = process.env
-if (!DATABASE_URL || !ADMIN_EMAIL || !ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) throw new Error('Set DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD (>= 12 chars)')
+if (!DATABASE_URL || !ADMIN_EMAIL || !ADMIN_PASSWORD || ADMIN_PASSWORD.length < 4) throw new Error('Set DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD (>= 4 chars)')
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL })
 const c = await pool.connect()

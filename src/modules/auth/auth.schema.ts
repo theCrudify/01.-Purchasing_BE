@@ -3,6 +3,6 @@ export const loginSchema = z.object({ email: z.string().trim().toLowerCase().ema
 export type LoginInput = z.infer<typeof loginSchema>
 
 /** Password policy shared by change-password, reset and invitations. */
-export const newPassword = z.string().min(12, 'At least 12 characters').max(200)
+export const newPassword = z.string().min(4, 'At least 4 characters').max(200)
 export const entraStartSchema = z.object({ next: z.string().max(500).optional() })
 export const entraCallbackSchema = z.object({ code: z.string().max(4000).optional(), state: z.string().max(200).optional(), error: z.string().max(200).optional(), error_description: z.string().max(2000).optional(), session_state: z.string().max(200).optional() })
