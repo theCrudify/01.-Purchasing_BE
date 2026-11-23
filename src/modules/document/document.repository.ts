@@ -73,10 +73,10 @@ export class DocumentRepository {
 
   async setStatus(id: number, to: string, actorId: number, extra: { cancelReason?: string } = {}) {
     await this.q.query(
-      `UPDATE tr_document SET "Status"=$2, "UpdatedBy"=$3, "Version"="Version"+1,
-         "SubmittedAt" = CASE WHEN $2 IN ('PENDING_APPROVAL','SUBMITTED') THEN now() ELSE "SubmittedAt" END,
-         "CancelledAt" = CASE WHEN $2 = 'CANCELLED' THEN now() ELSE NULL END,
-         "CancelReason" = CASE WHEN $2 = 'CANCELLED' THEN COALESCE($4, "CancelReason") ELSE "CancelReason" END
+      `UPDATE tr_document SET "Status"=$2::text, "UpdatedBy"=$3, "Version"="Version"+1,
+         "SubmittedAt" = CASE WHEN $2::text IN ('PENDING_APPROVAL','SUBMITTED') THEN now() ELSE "SubmittedAt" END,
+         "CancelledAt" = CASE WHEN $2::text = 'CANCELLED' THEN now() ELSE NULL END,
+         "CancelReason" = CASE WHEN $2::text = 'CANCELLED' THEN COALESCE($4::text, "CancelReason") ELSE "CancelReason" END
        WHERE "Id"=$1`, [id, to, actorId, extra.cancelReason ?? null])
   }
 

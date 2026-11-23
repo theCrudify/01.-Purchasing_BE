@@ -18,6 +18,7 @@ export class EmployeeRepository {
   async internalUserId(publicId: string) {
     return (await this.q.query<{ Id: number }>(`SELECT "Id" FROM mst_user WHERE "PublicId"=$1 AND "UserType"='INTERNAL'`, [publicId]))[0]?.Id
   }
+  async isEmployee(userId: number) { return (await this.q.query(`SELECT 1 FROM mst_employee WHERE "UserId"=$1`, [userId])).length > 0 }
   async departmentActive(id: number) { return (await this.q.query(`SELECT 1 FROM mst_department WHERE "Id"=$1 AND "IsActive" AND NOT "IsDeleted"`, [id])).length > 0 }
   /** true if `superiorId` is `userId` or reports (transitively) to it */
   async wouldCycle(userId: number, superiorId: number) {

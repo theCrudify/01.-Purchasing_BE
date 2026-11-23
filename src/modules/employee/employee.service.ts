@@ -18,7 +18,7 @@ export class EmployeeService {
     if (d.departmentId !== undefined && !(await r.departmentActive(d.departmentId))) throw rule('Department is not active')
     if (d.superiorId !== undefined) {
       const sup = d.superiorId === null ? null : await r.internalUserId(d.superiorId)
-      if (d.superiorId && !sup) throw rule('Superior must be an internal user')
+      if (d.superiorId && (!sup || !(await r.isEmployee(sup)))) throw rule('Superior must be an internal user with an employee record')
       if (sup && (sup === userId || (await r.wouldCycle(userId, sup)))) throw rule('Superior would create a reporting cycle')
       out.superiorUserId = sup
     }
