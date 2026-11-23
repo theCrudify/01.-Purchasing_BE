@@ -1,0 +1,2855 @@
+// =====================================================================
+// KPIN — Integrated Business Partner, Procurement & Approval Database
+// Provider : SQL Server 2019+
+//
+// Table prefixes
+//   mst_  master & configuration (changes rarely, referenced by transactions)
+//   tr_   transactions (one row per business event / document)
+//   hist_ append-only history & audit (never updated)
+//   sys_  technical (sessions, OTP, files, numbering)
+//
+// Conventions
+//   - Fields PascalCase, tables snake_case via @@map (same as the old portal).
+//   - Every relation is NoAction/NoAction: rows are never hard-deleted and
+//     SQL Server rejects multiple cascade paths.
+//   - CreatedBy/UpdatedBy are plain BigInt (log values, no FK). Business actors
+//     (approver, reviewer, owner, ...) ARE foreign keys.
+//   - Status columns are VarChar + CHECK constraints (SQL Server has no enum).
+//   - CHECK constraints, filtered unique indexes and views live in
+//     prisma/sql/constraints.sql — append it to the first migration
+//     (`prisma migrate dev --create-only`, then paste, then `migrate dev`).
+// =====================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =====================================================================
+// 1. IDENTITY & ACCESS (mst_)
+// =====================================================================
+
+/// One identity for internal staff, business-partner portal users and system accounts.
+model User {
+  Id              BigInt    @id @default(autoincrement())
+  PublicId        String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  UserType        String    @db.VarChar(10) /// INTERNAL | BP | SYSTEM
+  Email           String    @unique @db.VarChar(254)
+  DisplayName     String    @db.VarChar(150)
+  Phone           String?   @db.VarChar(30)
+  SignatureFileId BigInt? /// signature image printed on approved documents
+  Status          String    @default("PENDING_ACTIVATION") @db.VarChar(20) /// PENDING_ACTIVATION | ACTIVE | LOCKED | DISABLED | REJECTED
+  StatusReason    String?   @db.VarChar(500) /// e.g. registration rejection reason
+  EmailVerifiedAt DateTime? @db.Timestamptz(3)
+  LastLoginAt     DateTime? @db.Timestamptz(3) /// [DB] maintained by trigger — read-only for the app (from sys_user_session)
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy       BigInt?
+  UpdatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy       BigInt?
+
+  Roles                 UserRole[]
+  Employee              Employee?
+  BpMemberships         BpUser[]
+  BpPicAssignments      BpInternalPic[]
+  Sessions              UserSession[]
+  UploadedFiles         StoredFile[]
+  HeadOfDepartments     Department[]
+  VerifiedBankAccounts  BpBankAccount[]
+  DecidedBpCategories   BpCategory[]
+  ReviewedBpDocuments   BpDocument[]
+  OwnedDocuments        Document[]
+  DocumentComments      DocumentComment[]
+  ReviewedVerifications BpVerification[]
+  VerificationChecks    BpVerificationCheck[]
+  RfqInvitationsSent    RfqParticipant[]
+  EvaluatedQuotations   Quotation[]
+  AcknowledgedPOs       PurchaseOrder[]
+  ReceivedGoods         GoodsReceipt[]
+  TemplateSteps         ApprovalTemplateStep[]
+  AssignedTasks         ApprovalTask[]          @relation("TaskAssignee")
+  ActedTasks            ApprovalTask[]          @relation("TaskActedBy")
+  DelegationsGiven      ApprovalDelegation[]    @relation("DelegationFrom")
+  DelegationsReceived   ApprovalDelegation[]    @relation("DelegationTo")
+  Notifications         Notification[]
+  DocumentStatusActs    DocumentStatusHistory[]
+  BpStatusActs          BpStatusHistory[]
+  Activities            UserActivity[]
+
+  PreparerMappings ApproverMapping[] @relation("MappingPreparer")
+  ApproverMappings ApproverMapping[] @relation("MappingApprover")
+
+  HandoversFrom UserHandover[] @relation("HandoverFrom")
+  HandoversTo   UserHandover[] @relation("HandoverTo")
+
+  ReassignmentsFrom      ApprovalReassignment[] @relation("ReassignFrom")
+  ReassignmentsTo        ApprovalReassignment[] @relation("ReassignTo")
+  ReassignmentsRequested ApprovalReassignment[] @relation("ReassignRequestedBy")
+  ReassignmentsToApprove ApprovalReassignment[] @relation("ReassignApprover")
+
+  Credential        UserCredential?
+  InvoicesToReceive ApInvoice[]      @relation("InvoiceReceiver")
+  BackupFor         ApprovalBackup[] @relation("BackupApprover")
+  BackupAs          ApprovalBackup[] @relation("BackupUser")
+
+  ApproverPicks DocumentApproverPick[]
+  FormNotes     FormNote[]
+  SignatureFile StoredFile?            @relation("UserSignature", fields: [SignatureFileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([Id, UserType]) // target of typed FKs (Employee, BpUser, BpInternalPic)
+  @@index([UserType, Status])
+  @@map("mst_user")
+}
+
+/// Login secrets and lockout state, separated from the profile so that no portal
+/// query (mst_user is readable for display names) can ever reach a password hash.
+/// Read and written only by the authentication service on the internal connection.
+model UserCredential {
+  UserId            BigInt    @id
+  AuthProvider      String    @default("LOCAL") @db.VarChar(20) /// LOCAL | ENTRA_ID (old value MICROSOFT → ENTRA_ID)
+  ExternalAuthId    String?   @db.VarChar(200) /// Entra object id, bound on first SSO login
+  PasswordHash      String?   @db.VarChar(255) /// required for LOCAL
+  PasswordChangedAt DateTime? @db.Timestamptz(3)
+  FailedLoginCount  Int       @default(0) @db.SmallInt
+  LockoutCount      Int       @default(0) @db.SmallInt /// escalating lockout: 15 + 5×(n−1) minutes, suspended after 5 cycles
+  LockoutUntil      DateTime? @db.Timestamptz(3)
+  UpdatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+
+  User User @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("sys_user_credential")
+}
+
+model Role {
+  Id          Int       @id @default(autoincrement())
+  Code        String    @unique @db.VarChar(50)
+  Name        String    @db.VarChar(100)
+  Scope       String    @db.VarChar(10) /// INTERNAL | BP | SYSTEM
+  Description String?   @db.VarChar(255)
+  IsActive    Boolean   @default(true)
+  IsDeleted   Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt   DateTime? @db.Timestamptz(3)
+  DeletedBy   BigInt?
+  CreatedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy   BigInt?
+  UpdatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy   BigInt?
+
+  Users         UserRole[]
+  Permissions   RolePermission[]
+  TemplateSteps ApprovalTemplateStep[]
+
+  @@map("mst_role")
+}
+
+model Permission {
+  Id     Int    @id @default(autoincrement())
+  Code   String @unique @db.VarChar(80) /// e.g. PO.CREATE, PO.APPROVE, BP.VERIFY
+  Module String @db.VarChar(30)
+  Name   String @db.VarChar(150)
+
+  Roles RolePermission[]
+
+  @@map("mst_permission")
+}
+
+model RolePermission {
+  RoleId       Int
+  PermissionId Int
+  CreatedAt    DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy    BigInt?
+
+  Role       Role       @relation(fields: [RoleId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Permission Permission @relation(fields: [PermissionId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([RoleId, PermissionId])
+  @@index([PermissionId])
+  @@map("mst_role_permission")
+}
+
+model UserRole {
+  UserId    BigInt
+  RoleId    Int
+  CreatedAt DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+
+  User User @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Role Role @relation(fields: [RoleId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([UserId, RoleId])
+  @@index([RoleId])
+  @@map("mst_user_role")
+}
+
+// =====================================================================
+// 2. INTERNAL ORGANISATION (mst_)
+// =====================================================================
+
+model Department {
+  Id         Int       @id @default(autoincrement())
+  Code       String    @unique @db.VarChar(20)
+  Name       String    @db.VarChar(150)
+  ParentId   Int?
+  HeadUserId BigInt?
+  IsActive   Boolean   @default(true)
+  IsDeleted  Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt  DateTime? @db.Timestamptz(3)
+  DeletedBy  BigInt?
+  CreatedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy  BigInt?
+  UpdatedAt  DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy  BigInt?
+
+  Parent   Department?  @relation("DepartmentTree", fields: [ParentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Children Department[] @relation("DepartmentTree")
+  HeadUser User?        @relation(fields: [HeadUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  CostCenters       CostCenter[]
+  Employees         Employee[]
+  Documents         Document[]
+  ApprovalTemplates ApprovalTemplate[]
+
+  ExpenseAccounts ExpenseAccount[]
+  Budgets         Budget[]
+
+  @@index([ParentId])
+  @@map("mst_department")
+}
+
+model CostCenter {
+  Id           Int       @id @default(autoincrement())
+  Code         String    @unique @db.VarChar(20)
+  Name         String    @db.VarChar(150)
+  DepartmentId Int?
+  IsActive     Boolean   @default(true)
+  IsDeleted    Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt    DateTime? @db.Timestamptz(3)
+  DeletedBy    BigInt?
+  CreatedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy    BigInt?
+  UpdatedAt    DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy    BigInt?
+
+  Department         Department?           @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseRequests   PurchaseRequest[]
+  PurchaseReqLines   PurchaseRequestLine[]
+  PurchaseOrderLines PurchaseOrderLine[]
+
+  ExpenseLines   ExpenseLine[]
+  ApInvoiceLines ApInvoiceLine[]
+  ArInvoiceLines ArInvoiceLine[]
+  JournalLines   JournalLine[]
+
+  PaymentLines PaymentLine[]
+
+  @@index([DepartmentId])
+  @@map("mst_cost_center")
+}
+
+/// 1:1 extension of an INTERNAL user. SuperiorUserId replaces ApproverBackup and
+/// EmployeeSuperiorDocumentApprovals.
+model Employee {
+  UserId         BigInt    @id
+  UserType       String    @default("INTERNAL") @db.VarChar(10) /// always INTERNAL (CHECK)
+  EmployeeNo     String    @unique @db.VarChar(30) /// NIK, normalised
+  DepartmentId   Int
+  JobTitle       String?   @db.VarChar(100)
+  SuperiorUserId BigInt?
+  JoinDate       DateTime? @db.Date
+  EndDate        DateTime? @db.Date /// last working day (may be in the future during notice period)
+  EndReason      String?   @db.VarChar(15) /// RESIGNED | TERMINATED | RETIRED | TRANSFERRED | DECEASED
+  IsActive       Boolean   @default(true)
+  CreatedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy      BigInt?
+  UpdatedAt      DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy      BigInt?
+
+  User         User       @relation(fields: [UserId, UserType], references: [Id, UserType], onDelete: NoAction, onUpdate: NoAction)
+  Department   Department @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Superior     Employee?  @relation("EmployeeSuperior", fields: [SuperiorUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+  Subordinates Employee[] @relation("EmployeeSuperior")
+
+  CashAdvances   CashAdvance[]
+  Reimbursements Reimbursement[]
+  BankAccounts   EmployeeBankAccount[]
+  Receipts       Receipt[]
+  JournalLines   JournalLine[]
+
+  @@unique([UserId, UserType])
+  @@index([DepartmentId])
+  @@index([SuperiorUserId])
+  @@map("mst_employee")
+}
+
+// =====================================================================
+// 3. GENERAL MASTER DATA (mst_)
+// =====================================================================
+
+/// ISO 4217 currencies (all of them, seeded from the official SIX list — sql/seed_currency.sql).
+/// Base / functional currency of KPIN is IDR.
+model Currency {
+  Code        String  @id @db.Char(3) /// ISO 4217 alpha, e.g. IDR
+  NumericCode String  @unique @db.Char(3) /// ISO 4217 numeric, e.g. 360
+  Name        String  @db.VarChar(100)
+  Symbol      String? @db.VarChar(10) /// display only, e.g. Rp, $, ¥
+  Decimals    Int     @default(2) @db.SmallInt /// ISO minor units (JPY 0, IDR 2, KWD 3)
+  IsFund      Boolean @default(false) /// fund / metal / special codes (XAU, XDR, BOV…) — not for documents
+  IsActive    Boolean @default(false) /// enabled for transactions by Finance
+
+  Rates            ExchangeRate[]
+  BusinessPartners BusinessPartner[]
+  BankAccounts     BpBankAccount[]
+  Documents        Document[]
+
+  EmployeeBankAccounts  EmployeeBankAccount[]
+  CompanyBankAccounts   CompanyBankAccount[]
+  JournalLines          JournalLine[]
+  FxRevaluationLines    FxRevaluationLine[]
+  AccountDeterminations AccountDetermination[]
+  LandedCosts           LandedCost[]
+
+  @@map("mst_currency")
+}
+
+/// Rate history: 1 unit of CurrencyCode = RateToBase IDR. Rows are never overwritten silently —
+/// every UPDATE/DELETE is copied to hist_audit_log by trigger. A document keeps the rate it was
+/// created with, so later rate changes never alter existing documents.
+model ExchangeRate {
+  CurrencyCode String   @db.Char(3)
+  RateType     String   @db.VarChar(10) /// MIDDLE (kurs tengah BI — accounting) | TAX (kurs KMK — PPN/PPh) | BANK (actual bank rate)
+  RateDate     DateTime @db.Date /// valid from this date until the next row of the same type
+  RateToBase   Decimal  @db.Decimal(18, 6) /// per 1 unit (convert BI "per 100 JPY" quotes on input)
+  Source       String   @default("MANUAL") @db.VarChar(20) /// BI | KMK | BANK | MANUAL
+  CreatedAt    DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy    BigInt?
+
+  Currency Currency @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([CurrencyCode, RateType, RateDate])
+  @@map("mst_exchange_rate")
+}
+
+/// VAT (PPN) and withholding tax (PPh) in one table — replaces mst_vat + mst_withholding_tax_rate.
+model TaxCode {
+  Id            Int       @id @default(autoincrement())
+  Code          String    @unique @db.VarChar(20)
+  Name          String    @db.VarChar(100)
+  TaxType       String    @db.VarChar(3) /// VAT | WHT
+  RatePercent   Decimal   @db.Decimal(7, 4)
+  EffectiveFrom DateTime  @db.Date
+  EffectiveTo   DateTime? @db.Date
+  IsActive      Boolean   @default(true)
+  IsDeleted     Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt     DateTime? @db.Timestamptz(3)
+  DeletedBy     BigInt?
+  CreatedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy     BigInt?
+  UpdatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy     BigInt?
+
+  Items              Item[]
+  QuotationLines     QuotationLine[]
+  PurchaseOrderLines PurchaseOrderLine[]
+  InvoicesVat        ApInvoice[]         @relation("InvoiceVat")
+  InvoicesWht        ApInvoice[]         @relation("InvoiceWht")
+
+  ArInvoicesVat  ArInvoice[]     @relation("ArInvoiceVat")
+  ArInvoicesWht  ArInvoice[]     @relation("ArInvoiceWht")
+  ArInvoiceLines ArInvoiceLine[]
+
+  BpDefaultVat          BusinessPartner[]      @relation("BpDefaultVat")
+  BpDefaultWht          BusinessPartner[]      @relation("BpDefaultWht")
+  ApInvoiceLinesVat     ApInvoiceLine[]        @relation("ApInvoiceLineVat")
+  ApInvoiceLinesWht     ApInvoiceLine[]        @relation("ApInvoiceLineWht")
+  AccountDeterminations AccountDetermination[]
+  ContractLines         PurchaseContractLine[]
+
+  @@index([TaxType, IsActive])
+  @@map("mst_tax_code")
+}
+
+model PaymentTerm {
+  Id           Int       @id @default(autoincrement())
+  Code         String    @unique @db.VarChar(20)
+  Name         String    @db.VarChar(100)
+  DueDays      Int       @db.SmallInt
+  BaselineDate String    @default("INVOICE_DATE") @db.VarChar(15) /// INVOICE_DATE | RECEIPT_DATE
+  IsActive     Boolean   @default(true)
+  IsDeleted    Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt    DateTime? @db.Timestamptz(3)
+  DeletedBy    BigInt?
+
+  BusinessPartners BusinessPartner[]
+  Quotations       Quotation[]
+  PurchaseOrders   PurchaseOrder[]
+
+  ArInvoices        ArInvoice[]
+  PurchaseContracts PurchaseContract[]
+
+  @@map("mst_payment_term")
+}
+
+model Uom {
+  Id        Int       @id @default(autoincrement())
+  Code      String    @unique @db.VarChar(10)
+  Name      String    @db.VarChar(50)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+
+  Items              Item[]
+  PurchaseReqLines   PurchaseRequestLine[]
+  RfqLines           RfqLine[]
+  PurchaseOrderLines PurchaseOrderLine[]
+
+  ArInvoiceLines ArInvoiceLine[]
+
+  ItemsPurchase    Item[]                 @relation("ItemPurchaseUom")
+  PrLinesInventory PurchaseRequestLine[]  @relation("PrLineInventoryUom")
+  PoLinesInventory PurchaseOrderLine[]    @relation("PoLineInventoryUom")
+  ContractLines    PurchaseContractLine[]
+
+  @@map("mst_uom")
+}
+
+/// One tree for items, PR lines and BP qualification ("which BP can supply this?").
+model Category {
+  Id        Int       @id @default(autoincrement())
+  Code      String    @unique @db.VarChar(30)
+  Name      String    @db.VarChar(150)
+  ParentId  Int?
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+  UpdatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy BigInt?
+
+  Parent                Category?              @relation("CategoryTree", fields: [ParentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Children              Category[]             @relation("CategoryTree")
+  Items                 Item[]
+  BpCategories          BpCategory[]
+  PurchaseReqLines      PurchaseRequestLine[]
+  RfqLines              RfqLine[]
+  AccountDeterminations AccountDetermination[]
+  ContractLines         PurchaseContractLine[]
+
+  @@index([ParentId])
+  @@map("mst_category")
+}
+
+/// RM Import, RM Local, Consumable, Service, Safety, Fixed Asset… Drives the approval template.
+/// Replaces Classifications, U_bsi_prclass and MappingApprover.TemplateName.
+model PurchaseClass {
+  Id                       Int       @id @default(autoincrement())
+  Code                     String    @unique @db.VarChar(20)
+  Name                     String    @db.VarChar(100)
+  IsAsset                  Boolean   @default(false)
+  InvoicePriceTolerancePct Decimal   @default(0) @db.Decimal(7, 4) /// allowed deviation of an invoice line's net unit price from the PO line's, in % (SAP price tolerance); 0 = exact
+  IsActive                 Boolean   @default(true)
+  IsDeleted                Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt                DateTime? @db.Timestamptz(3)
+  DeletedBy                BigInt?
+
+  PurchaseRequests      PurchaseRequest[]
+  PurchaseOrders        PurchaseOrder[]
+  ApprovalTemplates     ApprovalTemplate[]
+  AccountDeterminations AccountDetermination[]
+  PurchaseContracts     PurchaseContract[]
+  Budgets               Budget[]
+
+  @@map("mst_purchase_class")
+}
+
+model Item {
+  Id            BigInt    @id @default(autoincrement())
+  Code          String    @unique @db.VarChar(30)
+  Name          String    @db.VarChar(200)
+  Description   String?   @db.VarChar(1000)
+  ItemType      String    @db.VarChar(10) /// GOODS | SERVICE
+  CategoryId    Int
+  UomId         Int
+  PurchaseUomId Int? /// unit used on PO (old PurchaseUom); UomId is the inventory unit
+  PackSize      Decimal?  @db.Decimal(18, 6) /// inventory units per purchase unit (old QtyPack)
+  VatTaxCodeId  Int?
+  IsActive      Boolean   @default(true)
+  IsDeleted     Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt     DateTime? @db.Timestamptz(3)
+  DeletedBy     BigInt?
+  CreatedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy     BigInt?
+  UpdatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy     BigInt?
+
+  Category   Category @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom        Uom      @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode TaxCode? @relation(fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  PurchaseReqLines   PurchaseRequestLine[]
+  RfqLines           RfqLine[]
+  PurchaseOrderLines PurchaseOrderLine[]
+
+  ArInvoiceLines ArInvoiceLine[]
+
+  PurchaseUom   Uom?                   @relation("ItemPurchaseUom", fields: [PurchaseUomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ContractLines PurchaseContractLine[]
+
+  @@index([CategoryId, IsActive])
+  @@index([Name])
+  @@map("mst_item")
+}
+
+/// Guidance text shown on a create form (old DocumentNotes): per user, or for everyone when UserId is NULL.
+model FormNote {
+  Id        Int       @id @default(autoincrement())
+  UserId    BigInt?
+  DocType   String    @db.VarChar(3)
+  Body      String    @db.VarChar(4000)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+  UpdatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy BigInt?
+
+  User User? @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([DocType, UserId])
+  @@map("mst_form_note")
+}
+
+/// Expense categories for CA / settlement / reimbursement lines (old mst_Categories: Transport, Medical…).
+/// Separate from mst_category, which classifies items and supplier qualification.
+model ExpenseCategory {
+  Id        Int       @id @default(autoincrement())
+  Code      String    @unique @db.VarChar(30)
+  Name      String    @db.VarChar(150)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+
+  ExpenseAccounts ExpenseAccount[]
+
+  @@map("mst_expense_category")
+}
+
+/// Predefined remark texts offered in dropdowns (old mst_Remark).
+model RemarkTemplate {
+  Id        Int       @id @default(autoincrement())
+  Module    String    @db.VarChar(5) /// CA | STL | RMB | ALL
+  Text      String    @db.VarChar(300)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+
+  @@map("mst_remark_template")
+}
+
+model Bank {
+  Id        Int       @id @default(autoincrement())
+  Code      String    @unique @db.VarChar(20)
+  Name      String    @db.VarChar(150)
+  SwiftCode String?   @db.VarChar(11)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+
+  BankAccounts BpBankAccount[]
+
+  EmployeeBankAccounts EmployeeBankAccount[]
+  CompanyBankAccounts  CompanyBankAccount[]
+
+  @@map("mst_bank")
+}
+
+/// Allowed status moves per document type (seeded by sql/seed_status_transition.sql).
+/// The database rejects any tr_document status change not listed here. RequiredApproval ties a
+/// move to the outcome of the document's latest approval round (PENDING = a round must be open).
+model StatusTransition {
+  DocType          String  @db.VarChar(3)
+  FromStatus       String  @db.VarChar(20)
+  ToStatus         String  @db.VarChar(20)
+  RequiredApproval String? @db.VarChar(10) /// PENDING | APPROVED | RETURNED | REJECTED
+  AllowBp          Boolean @default(false) /// a supplier / customer portal user may make this move (submit, withdraw, acknowledge); staff may make every move
+  Description      String? @db.VarChar(200)
+
+  @@id([DocType, FromStatus, ToStatus])
+  @@map("mst_status_transition")
+}
+
+/// Legal documents a BP must upload: NPWP, NIB, Akta, SPPKP, rekening koran, ISO…
+model BpDocumentType {
+  Id            Int       @id @default(autoincrement())
+  Code          String    @unique @db.VarChar(30)
+  Name          String    @db.VarChar(150)
+  AppliesTo     String    @default("ALL") @db.VarChar(10) /// ALL | COMPANY | INDIVIDUAL
+  IsMandatory   Boolean   @default(false)
+  HasExpiry     Boolean   @default(false)
+  AllowMultiple Boolean   @default(false) /// e.g. SUPPORT: many live files of this type
+  IsActive      Boolean   @default(true)
+  IsDeleted     Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt     DateTime? @db.Timestamptz(3)
+  DeletedBy     BigInt?
+
+  Documents BpDocument[]
+
+  @@map("mst_bp_document_type")
+}
+
+// =====================================================================
+// 3b. FINANCE MASTER (mst_)
+// =====================================================================
+
+/// Chart of accounts. Replaces mst_Coa + mst_AccountName (two unlinked lists) and the
+/// free-text Coa/AccountName/GLAccount copied into every old document.
+model Coa {
+  Id          Int       @id @default(autoincrement())
+  AccountCode String    @unique @db.VarChar(20)
+  AccountName String    @db.VarChar(200)
+  AccountType String?   @db.VarChar(10) /// ASSET | LIABILITY | EQUITY | REVENUE | EXPENSE
+  ParentId    Int?
+  IsPostable  Boolean   @default(true)
+  IsActive    Boolean   @default(true)
+  IsDeleted   Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt   DateTime? @db.Timestamptz(3)
+  DeletedBy   BigInt?
+  CreatedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy   BigInt?
+  UpdatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy   BigInt?
+
+  Parent              Coa?                 @relation("CoaTree", fields: [ParentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Children            Coa[]                @relation("CoaTree")
+  ExpenseAccounts     ExpenseAccount[]
+  ExpenseLines        ExpenseLine[]
+  CompanyBankAccounts CompanyBankAccount[]
+  ApInvoiceLines      ApInvoiceLine[]
+  ArInvoiceLines      ArInvoiceLine[]
+  JournalLines        JournalLine[]
+
+  BpApControl   BusinessPartner[] @relation("BpApControl")
+  BpArControl   BusinessPartner[] @relation("BpArControl")
+  BpDownPayment BusinessPartner[] @relation("BpDownPayment")
+
+  PaymentLines          PaymentLine[]
+  TransactionTypes      TransactionType[]      @relation("TransactionTypeControl")
+  AccountDeterminations AccountDetermination[]
+
+  @@index([ParentId])
+  @@index([AccountType, IsActive])
+  @@map("mst_coa")
+}
+
+/// Transaction types per module (BT, EN, GC, LO, MA, ME, NRM, OT, TR…). Replaces
+/// TransactionTypes + MasterTypeTransactions + the free-text TypeTransaction codes.
+model TransactionType {
+  Id                 Int       @id @default(autoincrement())
+  Module             String    @db.VarChar(5) /// CA | STL | RMB | ALL
+  Code               String    @db.VarChar(10)
+  Name               String    @db.VarChar(100)
+  RequiresSettlement Boolean   @default(true) /// CA must be settled (false for Personal Loan)
+  RequiresClose      Boolean   @default(false) /// CA closed by Finance after repayment (Personal Loan)
+  ControlCoaId       Int? /// employee-advance / control account booked for this type (old OPCA ControlAccount)
+  IsActive           Boolean   @default(true)
+  IsDeleted          Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt          DateTime? @db.Timestamptz(3)
+  DeletedBy          BigInt?
+
+  CashAdvances     CashAdvance[]
+  Reimbursements   Reimbursement[]
+  ExpenseAccounts  ExpenseAccount[]
+  ApproverMappings ApproverMapping[]
+
+  ApprovalTemplates ApprovalTemplate[]
+  ControlCoa        Coa?               @relation("TransactionTypeControl", fields: [ControlCoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([Module, Code])
+  @@map("mst_transaction_type")
+}
+
+/// Category → COA lookup per module / transaction type / department (old ExpensesCOA,
+/// Expenses, ExpenseDepartments). NULL TransactionTypeId / DepartmentId = applies to all.
+model ExpenseAccount {
+  Id                Int       @id @default(autoincrement())
+  Module            String    @db.VarChar(5) /// CA | STL | RMB | AP | ALL
+  TransactionTypeId Int?
+  DepartmentId      Int?
+  ExpenseCategoryId Int
+  CoaId             Int
+  Remarks           String?   @db.VarChar(300)
+  IsActive          Boolean   @default(true)
+  IsDeleted         Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt         DateTime? @db.Timestamptz(3)
+  DeletedBy         BigInt?
+  CreatedAt         DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy         BigInt?
+  UpdatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy         BigInt?
+
+  TransactionType TransactionType? @relation(fields: [TransactionTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Department      Department?      @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Coa             Coa              @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ExpenseLines    ExpenseLine[]
+
+  ExpenseCategory ExpenseCategory @relation(fields: [ExpenseCategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([Module, TransactionTypeId, DepartmentId])
+  @@index([CoaId])
+  @@map("mst_expense_account")
+}
+
+/// Purchasing budget (SAP funds commitment, simplified): per fiscal year and department, optionally
+/// per purchase class, in IDR. Commitments = live POs + approved-but-unordered PR remainders
+/// (vw_budget_consumption). BLOCK rejects a PR / PO submit that exceeds it; WARN only reports.
+/// shortcut: yearly budgets by DocDate year; add PeriodKey if monthly / quarterly control is needed.
+model Budget {
+  Id              Int       @id @default(autoincrement())
+  FiscalYear      Int       @db.SmallInt
+  DepartmentId    Int
+  PurchaseClassId Int? /// NULL = whole department
+  Amount          Decimal   @db.Decimal(19, 2) /// IDR
+  ControlMode     String    @default("BLOCK") @db.VarChar(5) /// BLOCK | WARN
+  Remarks         String?   @db.VarChar(300)
+  IsActive        Boolean   @default(true)
+  IsDeleted       Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt       DateTime? @db.Timestamptz(3)
+  DeletedBy       BigInt?
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy       BigInt?
+  UpdatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy       BigInt?
+
+  Department    Department     @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass PurchaseClass? @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([FiscalYear, DepartmentId])
+  @@map("mst_budget")
+}
+
+/// Accounting periods (SAP OFPR). A journal can be POSTED only into an OPEN period, or a CLOSING
+/// period by a user holding GL.POST_CLOSING. A month without a row is closed.
+/// shortcut: calendar months only (PeriodKey = YYYYMM); add Start/End dates if a non-calendar fiscal year is needed.
+model PostingPeriod {
+  PeriodKey String    @id @db.Char(6) /// 'YYYYMM' of the journal PostingDate
+  Status    String    @default("OPEN") @db.VarChar(10) /// OPEN | CLOSING (finance only, month-end adjustments) | LOCKED
+  ClosedAt  DateTime? @db.Timestamptz(3)
+  ClosedBy  BigInt?
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+  UpdatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy BigInt?
+
+  @@map("mst_posting_period")
+}
+
+/// G/L account determination (SAP OACT / OBYC): which COA the posting service books for each
+/// account role. Optional filters narrow a rule; NULL = any. The most specific active rule wins
+/// (see dbo.fn_account_for). BP-level control accounts (mst_business_partner.ApControlCoaId …)
+/// override AP_CONTROL / AR_CONTROL / DOWN_PAYMENT_* for that partner.
+model AccountDetermination {
+  Id              Int       @id @default(autoincrement())
+  AccountRole     String    @db.VarChar(20) /// GRIR_CLEARING | INVENTORY | EXPENSE | FIXED_ASSET | REVENUE | VAT_INPUT | VAT_OUTPUT | WHT_PAYABLE | WHT_PREPAID | AP_CONTROL | AR_CONTROL | DOWN_PAYMENT_AP | DOWN_PAYMENT_AR | EMPLOYEE_ADVANCE | CASH_DISCOUNT | FX_GAIN_REALIZED | FX_LOSS_REALIZED | FX_GAIN_UNREALIZED | FX_LOSS_UNREALIZED | ROUNDING
+  TaxCodeId       Int? /// VAT_* / WHT_* roles only
+  CategoryId      Int? /// item category (exact match; parent categories are not searched)
+  PurchaseClassId Int?
+  CurrencyCode    String?   @db.Char(3)
+  CoaId           Int /// must be an active, postable account
+  Remarks         String?   @db.VarChar(300)
+  IsActive        Boolean   @default(true)
+  IsDeleted       Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt       DateTime? @db.Timestamptz(3)
+  DeletedBy       BigInt?
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy       BigInt?
+  UpdatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy       BigInt?
+
+  TaxCode       TaxCode?       @relation(fields: [TaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Category      Category?      @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass PurchaseClass? @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency      Currency?      @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  Coa           Coa            @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([AccountRole, IsActive])
+  @@index([CoaId])
+  @@map("mst_account_determination")
+}
+
+/// Company's own bank accounts (old hard-coded TrsfrAcct list: Mizuho, MUFG, CIMB in IDR/USD/JPY).
+model CompanyBankAccount {
+  Id           Int       @id @default(autoincrement())
+  Code         String    @unique @db.VarChar(20)
+  AccountKind  String    @default("BANK") @db.VarChar(5) /// BANK | CASH (cash on hand / petty cash)
+  BankId       Int?
+  AccountNo    String?   @db.VarChar(34)
+  AccountName  String    @db.VarChar(150)
+  CurrencyCode String    @db.Char(3)
+  CoaId        Int /// GL account of this bank
+  IsActive     Boolean   @default(true)
+  IsDeleted    Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt    DateTime? @db.Timestamptz(3)
+  DeletedBy    BigInt?
+
+  Bank       Bank?       @relation(fields: [BankId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency   Currency    @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  Coa        Coa         @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Payments   Payment[]
+  Receipts   Receipt[]
+  ArInvoices ArInvoice[]
+
+  @@map("mst_company_bank_account")
+}
+
+/// Employee payout accounts for cash advance / reimbursement transfers.
+model EmployeeBankAccount {
+  Id                 BigInt    @id @default(autoincrement())
+  PublicId           String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  EmployeeUserId     BigInt
+  BankId             Int
+  AccountNo          String    @db.VarChar(34)
+  AccountHolderName  String    @db.VarChar(150)
+  CurrencyCode       String    @default("IDR") @db.Char(3)
+  VerificationStatus String    @default("PENDING") @db.VarChar(10) /// PENDING | VERIFIED | REJECTED
+  VerifiedAt         DateTime? @db.Timestamptz(3)
+  VerifiedBy         BigInt?
+  IsPrimary          Boolean   @default(false)
+  IsActive           Boolean   @default(true)
+  IsDeleted          Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt          DateTime? @db.Timestamptz(3)
+  DeletedBy          BigInt?
+  CreatedAt          DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy          BigInt?
+  UpdatedAt          DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy          BigInt?
+
+  Employee Employee  @relation(fields: [EmployeeUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+  Bank     Bank      @relation(fields: [BankId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency Currency  @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  Payments Payment[]
+
+  @@unique([EmployeeUserId, BankId, AccountNo])
+  @@map("mst_employee_bank_account")
+}
+
+/// Approver per preparer, document type, transaction type and step (old
+/// EmployeeSuperiorDocumentApprovals). Used by template steps of type PREPARER_MAPPING.
+/// NULL TransactionTypeId = ALL.
+model ApproverMapping {
+  Id                Int       @id @default(autoincrement())
+  PreparerUserId    BigInt
+  DocType           String    @db.VarChar(3)
+  TransactionTypeId Int?
+  PaymentPurpose    String?   @db.VarChar(20) /// PAY only (old OP / OPCA / POAPNEW)
+  StepCode          String    @db.VarChar(5) /// CH | AC | AP | RE | CL
+  ApproverUserId    BigInt
+  IsActive          Boolean   @default(true)
+  IsDeleted         Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt         DateTime? @db.Timestamptz(3)
+  DeletedBy         BigInt?
+  CreatedAt         DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy         BigInt?
+  UpdatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy         BigInt?
+
+  Preparer        User             @relation("MappingPreparer", fields: [PreparerUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Approver        User             @relation("MappingApprover", fields: [ApproverUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  TransactionType TransactionType? @relation(fields: [TransactionTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([PreparerUserId, DocType, TransactionTypeId, PaymentPurpose, StepCode, ApproverUserId])
+  @@index([ApproverUserId])
+  @@map("mst_approver_mapping")
+}
+
+// =====================================================================
+// 4. BUSINESS PARTNER MASTER (mst_bp_*)
+// =====================================================================
+
+/// One row per legal entity (unique NPWP). A BP can be supplier, customer, or both.
+model BusinessPartner {
+  Id                  BigInt    @id @default(autoincrement())
+  PublicId            String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  BpCode              String?   @db.VarChar(20) /// assigned on first approval (filtered unique)
+  IsSupplier          Boolean   @default(false)
+  IsCustomer          Boolean   @default(false)
+  EntityType          String    @db.VarChar(10) /// COMPANY (Badan) | INDIVIDUAL
+  LegalName           String    @db.VarChar(200)
+  TradeName           String?   @db.VarChar(200)
+  TaxId               String?   @db.VarChar(20) /// NPWP digits only (filtered unique)
+  BusinessRegNo       String?   @db.VarChar(20) /// NIB
+  IsVatRegistered     Boolean   @default(false) /// PKP
+  CountryCode         String    @default("ID") @db.Char(2)
+  Email               String?   @db.VarChar(254) /// required for self-registered partners (CHECK)
+  Phone               String?   @db.VarChar(30)
+  Fax                 String?   @db.VarChar(30)
+  GroupName           String?   @db.VarChar(100) /// old VendorGroup / BP group
+  Website             String?   @db.VarChar(200)
+  DefaultCurrencyCode String    @default("IDR") @db.Char(3)
+  PaymentTermId       Int?
+  ApControlCoaId      Int? /// payable control account (old MainPayableAccount)
+  ArControlCoaId      Int? /// receivable control account (customers)
+  DownPaymentCoaId    Int? /// down-payment account (old DPAccount)
+  DefaultVatTaxCodeId Int? /// old TaxCode
+  DefaultWhtTaxCodeId Int?
+  OnboardingStatus    String    @default("DRAFT") @db.VarChar(20) /// DRAFT | SUBMITTED | REVISION_REQUIRED | APPROVED | REJECTED
+  OperationalStatus   String    @default("INACTIVE") @db.VarChar(15) /// INACTIVE | ACTIVE | SUSPENDED | BLACKLISTED
+  OperationalReason   String?   @db.VarChar(500)
+  IsDeleted           Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt           DateTime? @db.Timestamptz(3)
+  DeletedBy           BigInt?
+  FirstApprovedAt     DateTime? @db.Timestamptz(3)
+  Source              String    @default("SELF_REGISTERED") @db.VarChar(15) /// SELF_REGISTERED | INTERNAL | MIGRATED
+  LegacyCode          String?   @db.VarChar(30) /// old SAP CardCode / portal VendorCode — traceability only
+  Version             Int       @default(0) /// optimistic concurrency
+  CreatedAt           DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy           BigInt?
+  UpdatedAt           DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy           BigInt?
+
+  DefaultCurrency Currency     @relation(fields: [DefaultCurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  PaymentTerm     PaymentTerm? @relation(fields: [PaymentTermId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  Addresses          BpAddress[]
+  Contacts           BpContact[]
+  BankAccounts       BpBankAccount[]
+  Categories         BpCategory[]
+  Users              BpUser[]
+  InternalPics       BpInternalPic[]
+  LegalDocuments     BpDocument[]
+  StatusHistory      BpStatusHistory[]
+  Documents          Document[]
+  RfqParticipations  RfqParticipant[]
+  SuggestedInPrLines PurchaseRequestLine[]
+  Invoices           ApInvoice[]
+
+  JournalLines JournalLine[]
+
+  ApControlCoa      Coa?     @relation("BpApControl", fields: [ApControlCoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ArControlCoa      Coa?     @relation("BpArControl", fields: [ArControlCoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  DownPaymentCoa    Coa?     @relation("BpDownPayment", fields: [DownPaymentCoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  DefaultVatTaxCode TaxCode? @relation("BpDefaultVat", fields: [DefaultVatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  DefaultWhtTaxCode TaxCode? @relation("BpDefaultWht", fields: [DefaultWhtTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([OnboardingStatus, OperationalStatus])
+  @@index([LegalName])
+  @@index([IsSupplier, OperationalStatus])
+  @@map("mst_business_partner")
+}
+
+model BpAddress {
+  Id          BigInt    @id @default(autoincrement())
+  PublicId    String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  BpId        BigInt
+  AddressType String    @db.VarChar(10) /// HQ | BILLING | SHIPPING | BRANCH
+  Line1       String    @db.VarChar(200)
+  Line2       String?   @db.VarChar(200)
+  City        String    @db.VarChar(100)
+  Province    String?   @db.VarChar(100)
+  PostalCode  String?   @db.VarChar(10)
+  CountryCode String    @default("ID") @db.Char(2)
+  IsPrimary   Boolean   @default(false)
+  IsActive    Boolean   @default(true)
+  IsDeleted   Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt   DateTime? @db.Timestamptz(3)
+  DeletedBy   BigInt?
+  CreatedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy   BigInt?
+  UpdatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy   BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([BpId])
+  @@map("mst_bp_address")
+}
+
+model BpContact {
+  Id        BigInt    @id @default(autoincrement())
+  PublicId  String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  BpId      BigInt
+  Name      String    @db.VarChar(150)
+  Position  String?   @db.VarChar(100)
+  Email     String?   @db.VarChar(254)
+  Phone     String?   @db.VarChar(30)
+  IsPrimary Boolean   @default(false)
+  IsActive  Boolean   @default(true)
+  IsDeleted Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt DateTime? @db.Timestamptz(3)
+  DeletedBy BigInt?
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+  UpdatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrders  PurchaseOrder[]
+
+  @@index([BpId])
+  @@map("mst_bp_contact")
+}
+
+/// A new or changed account is unusable for payment until VERIFIED (anti-fraud).
+model BpBankAccount {
+  Id                 BigInt    @id @default(autoincrement())
+  PublicId           String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  BpId               BigInt
+  BankId             Int
+  AccountNo          String    @db.VarChar(34)
+  AccountHolderName  String    @db.VarChar(150)
+  BranchName         String?   @db.VarChar(100)
+  CurrencyCode       String    @default("IDR") @db.Char(3)
+  ProofFileId        BigInt?
+  VerificationStatus String    @default("PENDING") @db.VarChar(10) /// PENDING | VERIFIED | REJECTED
+  VerifiedAt         DateTime? @db.Timestamptz(3)
+  VerifiedBy         BigInt?
+  IsPrimary          Boolean   @default(false)
+  IsActive           Boolean   @default(true)
+  IsDeleted          Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt          DateTime? @db.Timestamptz(3)
+  DeletedBy          BigInt?
+  CreatedAt          DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy          BigInt?
+  UpdatedAt          DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy          BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Bank            Bank            @relation(fields: [BankId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency        Currency        @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  ProofFile       StoredFile?     @relation(fields: [ProofFileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Verifier        User?           @relation(fields: [VerifiedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Payments        Payment[]
+
+  Iban               String? @db.VarChar(34)
+  BeneficiaryAddress String? @db.VarChar(300)
+  IsResident         Boolean @default(true) /// MUFG remittance profile (old UDO_Detail / BeneficiaryInformation)
+  BeneficiaryType    String? @db.VarChar(10) /// INDIVIDUAL | COMPANY
+  Relationship       String? @db.VarChar(50)
+  RemittancePurpose  String? @db.VarChar(100)
+  VirtualAccountNo   String? @db.VarChar(50)
+  VirtualAccountName String? @db.VarChar(200) /// old BeneficiaryAccountVA
+  BeneficiaryCountry String? @db.Char(2)
+  BeneficiaryCity    String? @db.VarChar(100)
+  BankAddress        String? @db.VarChar(500)
+  BankCity           String? @db.VarChar(100)
+  BankCountry        String? @db.Char(2)
+  Citizenship        String? @db.VarChar(20)
+  PaymentTypeMufg    String? @db.VarChar(30)
+  ExchangeMethod     String? @db.VarChar(30)
+  RemittanceNote1    String? @db.VarChar(500)
+  RemittanceNote2    String? @db.VarChar(500)
+
+  @@unique([BpId, BankId, AccountNo])
+  @@map("mst_bp_bank_account")
+}
+
+/// BP qualification per category, with its own approval state.
+model BpCategory {
+  BpId       BigInt
+  CategoryId Int
+  Status     String    @default("PENDING") @db.VarChar(10) /// PENDING | APPROVED | REJECTED | SUSPENDED
+  DecidedAt  DateTime? @db.Timestamptz(3)
+  DecidedBy  BigInt?
+  CreatedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy  BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Category        Category        @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Decider         User?           @relation(fields: [DecidedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([BpId, CategoryId])
+  @@index([CategoryId, Status])
+  @@map("mst_bp_category")
+}
+
+/// Portal logins of a BP (N:M — one consultant can serve several BPs).
+model BpUser {
+  BpId       BigInt
+  UserId     BigInt
+  UserType   String   @default("BP") @db.VarChar(10) /// always BP (CHECK)
+  AccessRole String   @default("STAFF") @db.VarChar(10) /// ADMIN | STAFF
+  IsActive   Boolean  @default(true)
+  CreatedAt  DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy  BigInt?
+  UpdatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy  BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  User            User            @relation(fields: [UserId, UserType], references: [Id, UserType], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([BpId, UserId])
+  @@index([UserId, IsActive])
+  @@map("mst_bp_user")
+}
+
+/// Internal people assigned to a BP (replaces usr_vendor_approver_access).
+model BpInternalPic {
+  BpId      BigInt
+  UserId    BigInt
+  UserType  String    @default("INTERNAL") @db.VarChar(10) /// always INTERNAL (CHECK)
+  PicRole   String    @db.VarChar(20) /// BUYER | INVOICE_RECEIVER | ACCOUNT_MANAGER
+  IsActive  Boolean   @default(true)
+  Notes     String?   @db.VarChar(500)
+  UpdatedAt DateTime? @db.Timestamptz(3)
+  UpdatedBy BigInt?
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy BigInt?
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  User            User            @relation(fields: [UserId, UserType], references: [Id, UserType], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([BpId, UserId, PicRole])
+  @@index([UserId, IsActive])
+  @@map("mst_bp_internal_pic")
+}
+
+/// Versioned legal documents; a new upload never overwrites an older version.
+model BpDocument {
+  Id             BigInt    @id @default(autoincrement())
+  PublicId       String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  BpId           BigInt
+  DocumentTypeId Int
+  VersionNo      Int       @db.SmallInt
+  FileId         BigInt
+  DocumentNo     String?   @db.VarChar(100)
+  IssuedDate     DateTime? @db.Date
+  ExpiryDate     DateTime? @db.Date
+  Status         String    @default("PENDING_REVIEW") @db.VarChar(15) /// PENDING_REVIEW | ACCEPTED | REJECTED | SUPERSEDED | EXPIRED
+  VerificationId BigInt?
+  ReviewedBy     BigInt?
+  ReviewedAt     DateTime? @db.Timestamptz(3)
+  ReviewRemarks  String?   @db.VarChar(1000)
+  Description    String?   @db.VarChar(500)
+  RemovedAt      DateTime? @db.Timestamptz(3) /// vendor removed a PENDING_REVIEW upload
+  RemovedBy      BigInt?
+  CreatedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy      BigInt
+
+  BusinessPartner BusinessPartner       @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  DocumentType    BpDocumentType        @relation(fields: [DocumentTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  File            StoredFile            @relation(fields: [FileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Verification    BpVerification?       @relation(fields: [VerificationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Reviewer        User?                 @relation(fields: [ReviewedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Checks          BpVerificationCheck[]
+
+  @@unique([BpId, DocumentTypeId, VersionNo])
+  @@index([VerificationId])
+  @@map("mst_bp_document")
+}
+
+// =====================================================================
+// 5. APPROVAL CONFIGURATION (mst_approval_*)
+// =====================================================================
+
+/// Picked on submit: DocType + PurchaseClass + Department + amount range; lowest Priority wins.
+model ApprovalTemplate {
+  Id                Int       @id @default(autoincrement())
+  Code              String    @unique @db.VarChar(30)
+  Name              String    @db.VarChar(150)
+  DocType           String    @db.VarChar(3) /// SVR | PR | RFQ | PO | INV | PAY
+  Priority          Int       @default(100) @db.SmallInt
+  MinAmountBase     Decimal?  @db.Decimal(19, 2) /// inclusive, IDR
+  MaxAmountBase     Decimal?  @db.Decimal(19, 2) /// exclusive, IDR
+  DepartmentId      Int?
+  PurchaseClassId   Int?
+  TransactionTypeId Int? /// e.g. Personal Loan CA has an extra Close step
+  PaymentPurpose    String?   @db.VarChar(20) /// PAY only: AP_INVOICE | CASH_ADVANCE | REIMBURSEMENT | SETTLEMENT_TOPUP
+  EffectiveFrom     DateTime  @db.Date
+  EffectiveTo       DateTime? @db.Date
+  IsActive          Boolean   @default(true)
+  IsDeleted         Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt         DateTime? @db.Timestamptz(3)
+  DeletedBy         BigInt?
+  CreatedAt         DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy         BigInt?
+  UpdatedAt         DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy         BigInt?
+
+  Department    Department?            @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass PurchaseClass?         @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Steps         ApprovalTemplateStep[]
+  Requests      ApprovalRequest[]
+
+  TransactionType TransactionType? @relation(fields: [TransactionTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([DocType, IsActive, Priority])
+  @@map("mst_approval_template")
+}
+
+model ApprovalTemplateStep {
+  Id                Int     @id @default(autoincrement())
+  TemplateId        Int
+  StepNo            Int     @db.SmallInt
+  Name              String  @db.VarChar(100) /// Checker, Acknowledger, Approver, Director, Receive…
+  StepCode          String? @db.VarChar(5) /// CH | AC | AP | RE | CL — key into mst_approver_mapping
+  ApproverType      String  @db.VarChar(15) /// USER | ROLE | REQUESTER_PICK | PREPARER_MAPPING | PREPARER_MAPPING_PICK | SUPERIOR | DEPARTMENT_HEAD | BP_PIC
+  ApproverUserId    BigInt?
+  ApproverRoleId    Int? /// for ROLE and REQUESTER_PICK (candidate pool)
+  PicRole           String? @db.VarChar(20) /// for BP_PIC: which PIC role of the document's BP (e.g. INVOICE_RECEIVER)
+  RequiredApprovals Int     @default(1) @db.SmallInt
+  IsOptional        Boolean @default(false)
+
+  Template     ApprovalTemplate @relation(fields: [TemplateId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ApproverUser User?            @relation(fields: [ApproverUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ApproverRole Role?            @relation(fields: [ApproverRoleId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([TemplateId, StepNo])
+  @@map("mst_approval_template_step")
+}
+
+/// Time-boxed out-of-office delegation.
+model ApprovalDelegation {
+  Id         BigInt    @id @default(autoincrement())
+  FromUserId BigInt
+  ToUserId   BigInt
+  DocType    String?   @db.VarChar(3) /// NULL = all document types
+  DocumentId BigInt? /// delegate ONE document only (old instant delegation); NULL = all within DocType
+  StartsAt   DateTime  @db.Timestamptz(3)
+  EndsAt     DateTime  @db.Timestamptz(3)
+  Reason     String?   @db.VarChar(300)
+  RevokedAt  DateTime? @db.Timestamptz(3)
+  CreatedAt  DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy  BigInt
+
+  FromUser User @relation("DelegationFrom", fields: [FromUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ToUser   User @relation("DelegationTo", fields: [ToUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  Document Document? @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([FromUserId, StartsAt, EndsAt])
+  @@index([ToUserId])
+  @@map("mst_approval_delegation")
+}
+
+/// Backup approvers (old ApproverBackup): may decide an approver's tasks at any time, like a
+/// standing delegation, without being the org superior. Several backups per approver allowed.
+model ApprovalBackup {
+  Id             BigInt    @id @default(autoincrement())
+  ApproverUserId BigInt
+  BackupUserId   BigInt
+  IsActive       Boolean   @default(true)
+  IsDeleted      Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt      DateTime? @db.Timestamptz(3)
+  DeletedBy      BigInt?
+  Notes          String?   @db.VarChar(500)
+  CreatedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy      BigInt?
+  UpdatedAt      DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy      BigInt?
+
+  Approver User @relation("BackupApprover", fields: [ApproverUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Backup   User @relation("BackupUser", fields: [BackupUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([ApproverUserId, BackupUserId])
+  @@index([BackupUserId, IsActive])
+  @@map("mst_approval_backup")
+}
+
+// =====================================================================
+// 6. DOCUMENT CORE (tr_document*) — supertype of every workflow document
+//    SVR BP verification | PR | RFQ | QUO quotation | PO | GR goods receipt
+//    INV AP invoice | PAY payment
+// =====================================================================
+
+model Document {
+  Id               BigInt    @id @default(autoincrement())
+  PublicId         String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  DocType          String    @db.VarChar(3)
+  DocNo            String?   @db.VarChar(30) /// assigned on first submit; NULL while DRAFT (filtered unique in constraints.sql)
+  DocDate          DateTime  @db.Date
+  Status           String    @default("DRAFT") @db.VarChar(20) /// allowed values per DocType: see constraints.sql (business lifecycle only; deletion is IsDeleted)
+  Title            String?   @db.VarChar(200)
+  BpId             BigInt? /// required for SVR/QUO/PO/GR/INV/PAY, NULL for PR/RFQ
+  DepartmentId     Int?
+  OwnerUserId      BigInt /// requester / buyer / submitting BP user
+  CurrencyCode     String?   @db.Char(3)
+  ExchangeRate     Decimal?  @db.Decimal(18, 6) /// snapshot; auto-filled by DB from MIDDLE rate on DocDate if NULL; locked after DRAFT; IDR = 1
+  ExchangeRateDate DateTime? @db.Date /// [DB] maintained by trigger — read-only for the app (date of the mst_exchange_rate row used; NULL = rate set manually / IDR)
+  TotalAmount      Decimal?  @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (PR estimate, QUO, PO grand total, INV net payable, ARI net receivable, CA/RMB/STL Σ lines, PAY Σ allocations, RCV amount)
+  TotalAmountBase  Decimal?  @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (= TotalAmount × ExchangeRate, IDR; drives approval matrix)
+  AppliedAmount    Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Σ completed payments + posted receipts applied to this document)
+  Remarks          String?   @db.VarChar(2000)
+  SubmittedAt      DateTime? @db.Timestamptz(3)
+  CancelledAt      DateTime? @db.Timestamptz(3)
+  CancelReason     String?   @db.VarChar(500)
+  IsDeleted        Boolean   @default(false) /// soft delete: hidden from normal lists, visible on the restricted "deleted" page
+  DeletedAt        DateTime? @db.Timestamptz(3)
+  DeletedBy        BigInt?
+  DeleteReason     String?   @db.VarChar(500) /// required when deleting
+  Version          Int       @default(0) /// optimistic concurrency
+  CreatedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy        BigInt?
+  UpdatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy        BigInt?
+
+  BusinessPartner BusinessPartner? @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Department      Department?      @relation(fields: [DepartmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Owner           User             @relation(fields: [OwnerUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency        Currency?        @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+
+  // subtypes (exactly one, matching DocType)
+  PurchaseContract PurchaseContract?
+  BpVerification   BpVerification?
+  PurchaseRequest  PurchaseRequest?
+  Rfq              Rfq?
+  Quotation        Quotation?
+  PurchaseOrder    PurchaseOrder?
+  GoodsReceipt     GoodsReceipt?
+  ApInvoice        ApInvoice?        @relation("ApInvoiceDocument")
+  Payment          Payment?
+
+  StatusHistory    DocumentStatusHistory[]
+  Attachments      DocumentAttachment[]
+  Comments         DocumentComment[]
+  ApprovalRequests ApprovalRequest[]
+  Notifications    Notification[]
+
+  CashAdvance        CashAdvance?
+  Settlement         Settlement?
+  Reimbursement      Reimbursement?
+  ArInvoice          ArInvoice?
+  Receipt            Receipt?
+  ExpenseLines       ExpenseLine[]
+  PaymentAllocations PaymentAllocation[]
+  ReceiptAllocations ReceiptAllocation[]
+  Journals           JournalEntry[]
+
+  FxRevaluationLines FxRevaluationLine[]
+
+  Delegations   ApprovalDelegation[]
+  BankCallbacks BankCallback[]
+
+  ApproverPicks DocumentApproverPick[]
+
+  @@unique([Id, DocType]) // subtype FK target: a PO row can only point to a PO document
+  @@unique([Id, DocType, BpId]) // lets tr_ap_invoice keep a DB-guaranteed copy of BpId
+  @@index([DocType, DocNo])
+  @@index([DocType, Status, DocDate(sort: Desc)])
+  @@index([BpId, DocType, Status])
+  @@index([OwnerUserId, DocType, Status])
+  @@index([DepartmentId, DocType])
+  @@map("tr_document")
+}
+
+model DocumentAttachment {
+  Id             BigInt    @id @default(autoincrement())
+  PublicId       String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  DocumentId     BigInt
+  FileId         BigInt
+  Category       String    @db.VarChar(20) /// SPECIFICATION | QUOTATION | INVOICE | TAX_INVOICE | DELIVERY_NOTE | BAST | QC_REPORT | PAYMENT_PROOF | CONTRACT | OTHER
+  Description    String?   @db.VarChar(500)
+  Visibility     String    @default("SHARED") @db.VarChar(10) /// SHARED (BP can see) | INTERNAL
+  SigningStatus  String    @default("NONE") @db.VarChar(10) /// NONE | PENDING | SIGNED | FAILED (e-sign / e-meterai, e.g. Kasbo)
+  SignedFileId   BigInt?
+  StampStatus    String    @default("NONE") @db.VarChar(10) /// NONE | PENDING | STAMPED | FAILED (e-meterai)
+  StampedFileId  BigInt?
+  ExternalJobRef String?   @db.VarChar(100) /// e-sign / e-meterai provider job id (e.g. Kasbo)
+  CreatedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy      BigInt
+  RemovedAt      DateTime? @db.Timestamptz(3)
+  RemovedBy      BigInt?
+
+  Document   Document    @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  SignedFile StoredFile? @relation("AttachmentSignedFile", fields: [SignedFileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  File       StoredFile  @relation("AttachmentFile", fields: [FileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  StampedFile StoredFile? @relation("AttachmentStampedFile", fields: [StampedFileId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([DocumentId, RemovedAt])
+  @@map("tr_document_attachment")
+}
+
+/// Replaces Remark / DocumentNotes. INTERNAL comments are never shown to the BP.
+model DocumentComment {
+  Id           BigInt   @id @default(autoincrement())
+  PublicId     String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  DocumentId   BigInt
+  AuthorUserId BigInt
+  Body         String   @db.VarChar(4000)
+  Visibility   String   @default("INTERNAL") @db.VarChar(10) /// SHARED | INTERNAL
+  CreatedAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  Document Document @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Author   User     @relation(fields: [AuthorUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([DocumentId, CreatedAt])
+  @@index([AuthorUserId])
+  @@map("tr_document_comment")
+}
+
+// =====================================================================
+// 7. BP VERIFICATION (tr_bp_*) — document type SVR
+// =====================================================================
+
+model BpVerification {
+  DocumentId        BigInt    @id
+  DocType           String    @default("SVR") @db.VarChar(3)
+  RequestType       String    @db.VarChar(15) /// REGISTRATION | CHANGE | RENEWAL
+  ReviewerUserId    BigInt?
+  ReviewStartedAt   DateTime? @db.Timestamptz(3)
+  ReviewCompletedAt DateTime? @db.Timestamptz(3)
+
+  Document       Document              @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Reviewer       User?                 @relation(fields: [ReviewerUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Checks         BpVerificationCheck[]
+  ProfileChanges BpProfileChange[]
+  BpDocuments    BpDocument[]
+  StatusChanges  BpStatusHistory[]
+
+  @@unique([DocumentId, DocType])
+  @@index([ReviewerUserId])
+  @@map("tr_bp_verification")
+}
+
+/// Checklist result per area / per legal document within one verification.
+model BpVerificationCheck {
+  Id             BigInt   @id @default(autoincrement())
+  VerificationId BigInt
+  CheckArea      String   @db.VarChar(15) /// PROFILE | LEGAL | TAX | BANK | DOCUMENT | CATEGORY
+  BpDocumentId   BigInt?
+  Result         String   @db.VarChar(5) /// PASS | FAIL | NA
+  Remarks        String?  @db.VarChar(1000)
+  CheckedBy      BigInt
+  CheckedAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  Verification BpVerification @relation(fields: [VerificationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  BpDocument   BpDocument?    @relation(fields: [BpDocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Checker      User           @relation(fields: [CheckedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([VerificationId])
+  @@index([BpDocumentId])
+  @@map("tr_bp_verification_check")
+}
+
+/// Proposed change to a sensitive field of an APPROVED BP; applied only when the SVR is approved.
+model BpProfileChange {
+  Id             BigInt    @id @default(autoincrement())
+  VerificationId BigInt
+  FieldName      String    @db.VarChar(50) /// whitelisted BusinessPartner column (CHECK)
+  OldValue       String?   @db.VarChar(500)
+  NewValue       String?   @db.VarChar(500)
+  AppliedAt      DateTime? @db.Timestamptz(3)
+
+  Verification BpVerification @relation(fields: [VerificationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([VerificationId, FieldName])
+  @@map("tr_bp_profile_change")
+}
+
+// =====================================================================
+// 8. PROCUREMENT (tr_)
+// =====================================================================
+
+model PurchaseRequest {
+  DocumentId      BigInt   @id
+  DocType         String   @default("PR") @db.VarChar(3)
+  RequiredDate    DateTime @db.Date
+  PurchaseClassId Int
+  CostCenterId    Int?
+  SourcingMethod  String   @default("DIRECT") @db.VarChar(10) /// DIRECT | RFQ
+  Justification   String?  @db.VarChar(2000)
+
+  Document      Document              @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass PurchaseClass         @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter    CostCenter?           @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines         PurchaseRequestLine[]
+
+  @@unique([DocumentId, DocType])
+  @@index([PurchaseClassId])
+  @@map("tr_purchase_request")
+}
+
+model PurchaseRequestLine {
+  Id                 BigInt    @id @default(autoincrement())
+  PurchaseRequestId  BigInt
+  LineNum            Int       @db.SmallInt
+  ItemId             BigInt? /// NULL = free-text (non-catalog) request
+  Description        String    @db.VarChar(500)
+  Detail             String?   @db.VarChar(2000)
+  Purpose            String?   @db.VarChar(500)
+  CategoryId         Int? /// optional on the PR form; derived from the item when known
+  UomId              Int
+  Quantity           Decimal   @db.Decimal(18, 4)
+  EstimatedUnitPrice Decimal?  @db.Decimal(19, 4)
+  RequiredDate       DateTime? @db.Date
+  EtaDate            DateTime? @db.Date /// ETA at port / Jakarta (raw-material PR)
+  InventoryQty       Decimal?  @db.Decimal(18, 4)
+  InventoryUomId     Int?
+  SuggestedBpId      BigInt?
+  CostCenterId       Int?
+  OrderedQty         Decimal   @default(0) @db.Decimal(18, 4) /// [DB] maintained by trigger — read-only for the app (Σ qty on live PO lines; ≤ Quantity)
+  LineStatus         String    @default("OPEN") @db.VarChar(10) /// OPEN | SOURCING | PARTIAL | ORDERED | CLOSED | CANCELLED
+
+  PurchaseRequest    PurchaseRequest     @relation(fields: [PurchaseRequestId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Item               Item?               @relation(fields: [ItemId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Category           Category?           @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom                Uom                 @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  SuggestedBp        BusinessPartner?    @relation(fields: [SuggestedBpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter         CostCenter?         @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  RfqLines           RfqLine[]
+  PurchaseOrderLines PurchaseOrderLine[]
+
+  InventoryUom Uom? @relation("PrLineInventoryUom", fields: [InventoryUomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([PurchaseRequestId, LineNum])
+  @@index([LineStatus, CategoryId])
+  @@map("tr_purchase_request_line")
+}
+
+model Rfq {
+  DocumentId         BigInt    @id
+  DocType            String    @default("RFQ") @db.VarChar(3)
+  SubmissionDeadline DateTime  @db.Timestamptz(3)
+  QuoteValidityDays  Int?      @db.SmallInt
+  EvaluationMethod   String    @default("LOWEST_PRICE") @db.VarChar(15) /// LOWEST_PRICE | WEIGHTED_SCORE
+  Terms              String?   @db.VarChar(4000)
+  PublishedAt        DateTime? @db.Timestamptz(3)
+
+  Document     Document         @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Lines        RfqLine[]
+  Participants RfqParticipant[]
+
+  @@unique([DocumentId, DocType])
+  @@map("tr_rfq")
+}
+
+model RfqLine {
+  Id                    BigInt    @id @default(autoincrement())
+  RfqId                 BigInt
+  LineNum               Int       @db.SmallInt
+  PurchaseRequestLineId BigInt?
+  ItemId                BigInt?
+  Description           String    @db.VarChar(500)
+  CategoryId            Int
+  UomId                 Int
+  Quantity              Decimal   @db.Decimal(18, 4)
+  RequiredDate          DateTime? @db.Date
+  Specification         String?   @db.VarChar(2000)
+
+  Rfq                 Rfq                  @relation(fields: [RfqId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseRequestLine PurchaseRequestLine? @relation(fields: [PurchaseRequestLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Item                Item?                @relation(fields: [ItemId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Category            Category             @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom                 Uom                  @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  QuotationLines      QuotationLine[]
+
+  @@unique([RfqId, LineNum])
+  @@index([PurchaseRequestLineId])
+  @@map("tr_rfq_line")
+}
+
+/// Invitation — the controlled N:M between RFQ and BP.
+model RfqParticipant {
+  Id               BigInt    @id @default(autoincrement())
+  RfqId            BigInt
+  BpId             BigInt
+  InvitationStatus String    @default("INVITED") @db.VarChar(10) /// INVITED | VIEWED | DECLINED | QUOTED
+  InvitedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  InvitedBy        BigInt
+  ViewedAt         DateTime? @db.Timestamptz(3)
+  RespondedAt      DateTime? @db.Timestamptz(3)
+  DeclineReason    String?   @db.VarChar(500)
+
+  Rfq             Rfq             @relation(fields: [RfqId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Inviter         User            @relation(fields: [InvitedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Quotations      Quotation[]
+
+  @@unique([RfqId, BpId])
+  @@index([BpId, InvitationStatus])
+  @@map("tr_rfq_participant")
+}
+
+model Quotation {
+  DocumentId        BigInt    @id
+  DocType           String    @default("QUO") @db.VarChar(3)
+  RfqParticipantId  BigInt
+  RevisionNo        Int       @default(1) @db.SmallInt
+  IsLatest          Boolean   @default(true) /// one latest revision per participant (filtered unique)
+  BpReference       String?   @db.VarChar(50)
+  ValidUntil        DateTime? @db.Date
+  PaymentTermId     Int?
+  DeliveryTerms     String?   @db.VarChar(200)
+  EvaluationScore   Decimal?  @db.Decimal(5, 2)
+  EvaluationRank    Int?      @db.SmallInt
+  EvaluationRemarks String?   @db.VarChar(1000)
+  EvaluatedBy       BigInt?
+  EvaluatedAt       DateTime? @db.Timestamptz(3)
+
+  Document       Document        @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  RfqParticipant RfqParticipant  @relation(fields: [RfqParticipantId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PaymentTerm    PaymentTerm?    @relation(fields: [PaymentTermId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Evaluator      User?           @relation(fields: [EvaluatedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines          QuotationLine[]
+  PurchaseOrders PurchaseOrder[]
+
+  @@unique([DocumentId, DocType])
+  @@unique([RfqParticipantId, RevisionNo])
+  @@map("tr_quotation")
+}
+
+model QuotationLine {
+  Id              BigInt  @id @default(autoincrement())
+  QuotationId     BigInt
+  RfqLineId       BigInt
+  Quantity        Decimal @db.Decimal(18, 4)
+  UnitPrice       Decimal @db.Decimal(19, 4)
+  DiscountPercent Decimal @default(0) @db.Decimal(7, 4)
+  VatTaxCodeId    Int?
+  LineAmount      Decimal @db.Decimal(19, 2) /// after discount, before VAT
+  LeadTimeDays    Int?    @db.SmallInt
+  Remarks         String? @db.VarChar(500)
+  AwardedQty      Decimal @default(0) @db.Decimal(18, 4)
+
+  Quotation          Quotation           @relation(fields: [QuotationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  RfqLine            RfqLine             @relation(fields: [RfqLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode         TaxCode?            @relation(fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrderLines PurchaseOrderLine[]
+
+  @@unique([QuotationId, RfqLineId])
+  @@index([RfqLineId])
+  @@map("tr_quotation_line")
+}
+
+model PurchaseOrder {
+  DocumentId       BigInt    @id
+  DocType          String    @default("PO") @db.VarChar(3)
+  QuotationId      BigInt? /// NULL for a direct PO
+  ContractId       BigInt? /// release order against a purchase contract (blanket PO)
+  RevisionNo       Int       @default(0) @db.SmallInt /// +1 on every change after approval (old values in hist_audit_log)
+  PurchaseClassId  Int
+  PaymentTermId    Int
+  PaymentTermsText String?   @db.VarChar(500) /// e.g. "30% DP, 70% after delivery"
+  PoType           String?   @db.VarChar(20)
+  BpReference      String?   @db.VarChar(100) /// supplier's reference / quotation no. (old NumAtCard)
+  ShippingMethod   String?   @db.VarChar(50)
+  DeliveryDate     DateTime? @db.Date
+  EtaDate          DateTime? @db.Date /// old U_ETA_JKT
+  DeliveryAddress  String?   @db.VarChar(500)
+  BpContactId      BigInt? /// recipient at the BP (old CC_CP_Name)
+  SubtotalAmount   Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Σ line amount)
+  DiscountAmount   Decimal   @default(0) @db.Decimal(19, 2)
+  FreightAmount    Decimal   @default(0) @db.Decimal(19, 2)
+  VatAmount        Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Σ line VAT)
+  GrandTotal       Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Subtotal − Discount + Freight + VAT)
+  IssuedAt         DateTime? @db.Timestamptz(3)
+  AcknowledgedAt   DateTime? @db.Timestamptz(3)
+  AcknowledgedBy   BigInt?
+
+  Document      Document            @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Quotation     Quotation?          @relation(fields: [QuotationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass PurchaseClass       @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PaymentTerm   PaymentTerm         @relation(fields: [PaymentTermId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  BpContact     BpContact?          @relation(fields: [BpContactId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Acknowledger  User?               @relation(fields: [AcknowledgedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines         PurchaseOrderLine[]
+  GoodsReceipts GoodsReceipt[]
+  Invoices      ApInvoice[]
+  Contract      PurchaseContract?   @relation(fields: [ContractId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([DocumentId, DocType])
+  @@index([QuotationId])
+  @@index([ContractId])
+  @@map("tr_purchase_order")
+}
+
+model PurchaseOrderLine {
+  Id                    BigInt    @id @default(autoincrement())
+  PurchaseOrderId       BigInt
+  LineNum               Int       @db.SmallInt
+  PurchaseRequestLineId BigInt?
+  QuotationLineId       BigInt?
+  ContractLineId        BigInt? /// released from this contract line (PO header must name the same contract)
+  ItemId                BigInt?
+  Description           String    @db.VarChar(500)
+  Detail                String?   @db.VarChar(2000)
+  UomId                 Int
+  Quantity              Decimal   @db.Decimal(18, 4)
+  UnitPrice             Decimal   @db.Decimal(19, 4)
+  PackSize              Decimal?  @db.Decimal(18, 6) /// inventory units per purchase unit (old NumPerMsr)
+  InventoryUomId        Int?
+  InventoryQty          Decimal?  @db.Decimal(18, 4) /// Quantity × PackSize
+  PricePerInventoryUnit Decimal?  @db.Decimal(19, 6) /// e.g. price per KG / LTR
+  DiscountPercent       Decimal   @default(0) @db.Decimal(7, 4)
+  VatTaxCodeId          Int?
+  LineAmount            Decimal   @db.Decimal(19, 2) /// after discount, before VAT
+  VatAmount             Decimal   @default(0) @db.Decimal(19, 2)
+  DeliveryDate          DateTime? @db.Date
+  CostCenterId          Int?
+  ReceivedQty           Decimal   @default(0) @db.Decimal(18, 4) /// [DB] maintained by trigger — read-only for the app (Σ accepted qty on POSTED GR; ≤ Quantity)
+  InvoicedQty           Decimal   @default(0) @db.Decimal(18, 4) /// [DB] maintained by trigger — read-only for the app (Σ qty on submitted, non-void AP invoices; ≤ Quantity)
+  LineStatus            String    @default("OPEN") @db.VarChar(10) /// OPEN | PARTIAL | RECEIVED | CLOSED | CANCELLED
+
+  PurchaseOrder       PurchaseOrder        @relation(fields: [PurchaseOrderId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseRequestLine PurchaseRequestLine? @relation(fields: [PurchaseRequestLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  QuotationLine       QuotationLine?       @relation(fields: [QuotationLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Item                Item?                @relation(fields: [ItemId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom                 Uom                  @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode          TaxCode?             @relation(fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter          CostCenter?          @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReceiptLines        GoodsReceiptLine[]
+  InvoiceLines        ApInvoiceLine[]
+
+  InventoryUom Uom?                  @relation("PoLineInventoryUom", fields: [InventoryUomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ContractLine PurchaseContractLine? @relation(fields: [ContractLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([PurchaseOrderId, LineNum])
+  @@index([PurchaseRequestLineId])
+  @@index([QuotationLineId])
+  @@index([ContractLineId])
+  @@map("tr_purchase_order_line")
+}
+
+/// Purchase contract / blanket agreement (SAP outline agreement, OOAT). Approved like a PO, then
+/// POs are released against it within its validity. QUANTITY: each line caps the released qty;
+/// AMOUNT: TargetAmount caps the released value (PO subtotal). Released figures: vw_contract_release.
+model PurchaseContract {
+  DocumentId      BigInt   @id
+  DocType         String   @default("CTR") @db.VarChar(3)
+  AgreementType   String   @default("QUANTITY") @db.VarChar(8) /// QUANTITY | AMOUNT
+  StartDate       DateTime @db.Date
+  EndDate         DateTime @db.Date
+  TargetAmount    Decimal? @db.Decimal(19, 2) /// AMOUNT agreements: maximum released value (before VAT, document currency)
+  PurchaseClassId Int
+  PaymentTermId   Int
+  BpReference     String?  @db.VarChar(100) /// supplier's contract number
+  Terms           String?  @db.VarChar(4000)
+
+  Document       Document               @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseClass  PurchaseClass          @relation(fields: [PurchaseClassId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PaymentTerm    PaymentTerm            @relation(fields: [PaymentTermId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines          PurchaseContractLine[]
+  PurchaseOrders PurchaseOrder[]
+
+  @@unique([DocumentId, DocType])
+  @@index([EndDate])
+  @@map("tr_purchase_contract")
+}
+
+model PurchaseContractLine {
+  Id              BigInt   @id @default(autoincrement())
+  ContractId      BigInt
+  LineNum         Int      @db.SmallInt
+  ItemId          BigInt?
+  CategoryId      Int?
+  Description     String   @db.VarChar(500)
+  UomId           Int
+  TargetQty       Decimal? @db.Decimal(18, 4) /// required for QUANTITY agreements
+  UnitPrice       Decimal  @db.Decimal(19, 4)
+  DiscountPercent Decimal  @default(0) @db.Decimal(7, 4)
+  VatTaxCodeId    Int?
+
+  Contract   PurchaseContract    @relation(fields: [ContractId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Item       Item?               @relation(fields: [ItemId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Category   Category?           @relation(fields: [CategoryId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom        Uom                 @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode TaxCode?            @relation(fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PoLines    PurchaseOrderLine[]
+
+  @@unique([ContractId, LineNum])
+  @@map("tr_purchase_contract_line")
+}
+
+/// Landed cost (SAP OIPF): import costs of a posted receipt — freight, insurance, customs duty, handling…
+/// When POSTED the database spreads AmountBase over the receipt lines (tr_landed_cost_allocation) by
+/// value or quantity. Non-capitalized costs (e.g. creditable PPN impor) are recorded but not allocated.
+model LandedCost {
+  Id               BigInt    @id @default(autoincrement())
+  PublicId         String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  GoodsReceiptId   BigInt
+  CostType         String    @db.VarChar(15) /// FREIGHT | INSURANCE | CUSTOMS_DUTY | IMPORT_VAT | IMPORT_WHT | HANDLING | OTHER
+  Description      String?   @db.VarChar(300)
+  SourceInvoiceId  BigInt? /// AP invoice of the forwarder / customs broker that billed this cost
+  CurrencyCode     String    @db.Char(3)
+  Amount           Decimal   @db.Decimal(19, 2)
+  ExchangeRate     Decimal   @default(1) @db.Decimal(18, 6)
+  AmountBase       Decimal   @db.Decimal(19, 2) /// = ROUND(Amount × ExchangeRate, 2), IDR (CHECK)
+  AllocationMethod String    @default("VALUE") @db.VarChar(8) /// VALUE | QUANTITY
+  IsCapitalized    Boolean   @default(true) /// false = recorded only (PPN / PPh impor are creditable taxes, not cost)
+  Status           String    @default("DRAFT") @db.VarChar(10) /// DRAFT | POSTED | CANCELLED
+  PostedAt         DateTime? @db.Timestamptz(3)
+  PostedBy         BigInt?
+  CreatedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy        BigInt?
+  UpdatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(3)
+  UpdatedBy        BigInt?
+
+  GoodsReceipt  GoodsReceipt           @relation(fields: [GoodsReceiptId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  SourceInvoice ApInvoice?             @relation(fields: [SourceInvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Currency      Currency               @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  Allocations   LandedCostAllocation[]
+
+  @@index([GoodsReceiptId])
+  @@index([SourceInvoiceId])
+  @@map("tr_landed_cost")
+}
+
+model LandedCostAllocation {
+  LandedCostId       BigInt
+  GoodsReceiptLineId BigInt
+  AmountBase         Decimal @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app
+
+  LandedCost       LandedCost       @relation(fields: [LandedCostId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  GoodsReceiptLine GoodsReceiptLine @relation(fields: [GoodsReceiptLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([LandedCostId, GoodsReceiptLineId])
+  @@index([GoodsReceiptLineId])
+  @@map("tr_landed_cost_allocation")
+}
+
+/// Goods receipt / service acceptance (Surat Jalan, BAST, QC).
+model GoodsReceipt {
+  DocumentId      BigInt   @id
+  DocType         String   @default("GR") @db.VarChar(3)
+  ReceiptKind     String   @default("RECEIPT") @db.VarChar(7) /// RECEIPT | RETURN (goods sent back to the supplier, SAP goods return)
+  ReturnReason    String?  @db.VarChar(500) /// required for RETURN
+  PurchaseOrderId BigInt
+  ReceivedDate    DateTime @db.Date
+  ReceivedBy      BigInt
+  DeliveryNoteNo  String?  @db.VarChar(50) /// Surat Jalan
+  VehiclePlateNo  String?  @db.VarChar(15)
+  DriverName      String?  @db.VarChar(100)
+  DriverPhone     String?  @db.VarChar(20)
+  CarrierName     String?  @db.VarChar(100) /// ekspedisi
+  Location        String?  @db.VarChar(100)
+
+  Document      Document            @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrder PurchaseOrder       @relation(fields: [PurchaseOrderId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Receiver      User                @relation(fields: [ReceivedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines         GoodsReceiptLine[]
+  Acceptances   ReceiptAcceptance[]
+  LandedCosts   LandedCost[]
+
+  @@unique([DocumentId, DocType])
+  @@index([PurchaseOrderId])
+  @@map("tr_goods_receipt")
+}
+
+model GoodsReceiptLine {
+  Id                  BigInt  @id @default(autoincrement())
+  GoodsReceiptId      BigInt
+  LineNum             Int     @db.SmallInt
+  PurchaseOrderLineId BigInt
+  ReceivedQty         Decimal @db.Decimal(18, 4)
+  AcceptedQty         Decimal @db.Decimal(18, 4)
+  RejectedQty         Decimal @default(0) @db.Decimal(18, 4) /// Accepted + Rejected = Received (CHECK)
+  RejectReason        String? @db.VarChar(500)
+  ReturnOfLineId      BigInt? /// RETURN only: the posted receipt line the goods came in on (qty = returned qty)
+
+  GoodsReceipt          GoodsReceipt           @relation(fields: [GoodsReceiptId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrderLine     PurchaseOrderLine      @relation(fields: [PurchaseOrderLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  InvoiceLines          ApInvoiceLine[]
+  ReturnOf              GoodsReceiptLine?      @relation("GrReturn", fields: [ReturnOfLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Returns               GoodsReceiptLine[]     @relation("GrReturn")
+  LandedCostAllocations LandedCostAllocation[]
+
+  @@unique([GoodsReceiptId, LineNum])
+  @@index([PurchaseOrderLineId])
+  @@index([ReturnOfLineId])
+  @@map("tr_goods_receipt_line")
+}
+
+/// BAST / QC / KAB sign-off (replaces the 15 U_IDS_* signatory columns).
+model ReceiptAcceptance {
+  Id                BigInt   @id @default(autoincrement())
+  GoodsReceiptId    BigInt
+  AcceptanceType    String   @db.VarChar(5) /// BAST | QC | KAB
+  ReferenceNo       String?  @db.VarChar(50)
+  SignatoryName     String   @db.VarChar(100)
+  SignatoryPosition String?  @db.VarChar(100)
+  Area              String?  @db.VarChar(100)
+  Result            String   @db.VarChar(12) /// ACCEPTED | REJECTED | CONDITIONAL
+  SignedAt          DateTime @db.Timestamptz(3)
+  Remarks           String?  @db.VarChar(500)
+  CreatedAt         DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy         BigInt
+
+  GoodsReceipt GoodsReceipt @relation(fields: [GoodsReceiptId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([GoodsReceiptId, AcceptanceType])
+  @@map("tr_receipt_acceptance")
+}
+
+// =====================================================================
+// 9. AP INVOICE & PAYMENT (tr_)
+// =====================================================================
+
+model ApInvoice {
+  DocumentId         BigInt    @id
+  DocType            String    @default("INV") @db.VarChar(3)
+  InvoiceKind        String    @default("INVOICE") @db.VarChar(12) /// INVOICE | CREDIT_MEMO | DOWN_PAYMENT (SAP A/P down payment invoice: paid in advance, deducted later)
+  OriginalInvoiceId  BigInt? /// for CREDIT_MEMO
+  BpId               BigInt /// copy of tr_document.BpId, enforced by the composite FK — needed for the (BpId, BpInvoiceNo) unique index
+  PurchaseOrderId    BigInt? /// see open question Q3 (non-PO invoices)
+  BpInvoiceNo        String    @db.VarChar(50)
+  DocumentReference  String?   @db.VarChar(100) /// vendor's reference (searchable, MUFG lookup key)
+  LegacyInvoiceNo    String?   @db.VarChar(50) /// old SystemInvoiceNo / SequentialInvoiceNo (migration, MUFG lookup)
+  ReceiverUserId     BigInt? /// internal receiver chosen by the vendor (an INVOICE_RECEIVER PIC of this BP)
+  TaxInvoiceNo       String?   @db.VarChar(30) /// Faktur Pajak (NSFP)
+  InvoiceDate        DateTime  @db.Date
+  ReceivedDate       DateTime? @db.Date
+  DueDate            DateTime? @db.Date
+  TransactionAmount  Decimal   @db.Decimal(19, 2) /// sale amount before tax (may differ from DPP with DPP nilai lain 11/12)
+  DownPaymentAmount  Decimal   @default(0) @db.Decimal(19, 2) /// down payment deducted from this invoice (= Σ tr_ap_down_payment_application once submitted, when any are recorded)
+  TaxBaseAmount      Decimal   @db.Decimal(19, 2) /// DPP
+  VatTaxCodeId       Int? /// single code; NULL when lines carry their own codes
+  VatAmount          Decimal   @default(0) @db.Decimal(19, 2) /// = Σ line VatAmount when lines are taxed (checked on submit)
+  WhtTaxCodeId       Int? /// single code; NULL when lines carry their own (e.g. PPh 23 + PPh 4(2))
+  WhtBaseAmount      Decimal?  @db.Decimal(19, 2)
+  WhtBaseDescription String?   @db.VarChar(255) /// free-text PPh base description (old TaxBasePPH)
+  WhtAmount          Decimal   @default(0) @db.Decimal(19, 2) /// = Σ line WhtAmount when lines are taxed (checked on submit)
+  TaxExchangeRate    Decimal?  @db.Decimal(18, 6) /// kurs pajak (KMK) on InvoiceDate; auto-filled by DB if NULL; IDR = 1
+  VatAmountBase      Decimal?  @db.Decimal(19, 0) /// [DB] maintained by trigger — read-only for the app (PPN in rupiah = VatAmount × TaxExchangeRate)
+  WhtAmountBase      Decimal?  @db.Decimal(19, 0) /// [DB] maintained by trigger — read-only for the app (PPh in rupiah)
+  NetPayable         Decimal   @db.Decimal(19, 2) /// = TransactionAmount − DownPaymentAmount + PPN − PPh (CHECK); copied to tr_document.TotalAmount by trigger
+  IsVoid             Boolean   @default(false) /// true on REJECTED/CANCELLED — frees the invoice number
+
+  Document        Document        @relation("ApInvoiceDocument", fields: [DocumentId, DocType, BpId], references: [Id, DocType, BpId], onDelete: NoAction, onUpdate: NoAction)
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrder   PurchaseOrder?  @relation(fields: [PurchaseOrderId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode      TaxCode?        @relation("InvoiceVat", fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  WhtTaxCode      TaxCode?        @relation("InvoiceWht", fields: [WhtTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines           ApInvoiceLine[]
+
+  Receiver User? @relation("InvoiceReceiver", fields: [ReceiverUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  OriginalInvoice ApInvoice?  @relation("ApCreditMemo", fields: [OriginalInvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  CreditMemos     ApInvoice[] @relation("ApCreditMemo")
+
+  DownPaymentsApplied  ApDownPaymentApplication[] @relation("DpAppliedOnInvoice")
+  DownPaymentDrawdowns ApDownPaymentApplication[] @relation("DpSource")
+  LandedCosts          LandedCost[]
+
+  @@unique([DocumentId, DocType, BpId])
+  @@index([PurchaseOrderId])
+  @@index([DueDate, IsVoid])
+  @@index([OriginalInvoiceId])
+  @@map("tr_ap_invoice")
+}
+
+model ApInvoiceLine {
+  Id                  BigInt  @id @default(autoincrement())
+  InvoiceId           BigInt
+  LineNum             Int     @db.SmallInt
+  PurchaseOrderLineId BigInt?
+  GoodsReceiptLineId  BigInt?
+  Description         String  @db.VarChar(500)
+  Quantity            Decimal @db.Decimal(18, 4)
+  UnitPrice           Decimal @db.Decimal(19, 4)
+  LineAmount          Decimal @db.Decimal(19, 2)
+
+  Invoice           ApInvoice          @relation(fields: [InvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  PurchaseOrderLine PurchaseOrderLine? @relation(fields: [PurchaseOrderLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  GoodsReceiptLine  GoodsReceiptLine?  @relation(fields: [GoodsReceiptLineId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  CoaId        Int? /// expense/asset account for non-PO lines
+  CostCenterId Int?
+
+  VatTaxCodeId  Int? /// PPN per line (SAP: tax code per row)
+  VatAmount     Decimal  @default(0) @db.Decimal(19, 2)
+  WhtTaxCodeId  Int? /// PPh per line, so one invoice can mix PPh 23 / 4(2) / 22
+  WhtBaseAmount Decimal? @db.Decimal(19, 2)
+  WhtAmount     Decimal  @default(0) @db.Decimal(19, 2)
+
+  Coa        Coa?        @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter CostCenter? @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode TaxCode?    @relation("ApInvoiceLineVat", fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  WhtTaxCode TaxCode?    @relation("ApInvoiceLineWht", fields: [WhtTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([InvoiceId, LineNum])
+  @@index([PurchaseOrderLineId])
+  @@index([GoodsReceiptLineId])
+  @@map("tr_ap_invoice_line")
+}
+
+/// Down payment drawn down on an invoice (SAP: DP invoice cleared on the final A/P invoice).
+/// The DP invoice must be PAID, of the same supplier and currency (and PO, when it has one);
+/// Σ drawn on submitted invoices ≤ the DP invoice's TransactionAmount (pre-tax).
+model ApDownPaymentApplication {
+  Id                   BigInt  @id @default(autoincrement())
+  InvoiceId            BigInt /// the INVOICE the down payment is deducted from
+  DownPaymentInvoiceId BigInt /// a DOWN_PAYMENT invoice
+  Amount               Decimal @db.Decimal(19, 2) /// pre-tax, in the invoices' currency
+
+  Invoice            ApInvoice @relation("DpAppliedOnInvoice", fields: [InvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  DownPaymentInvoice ApInvoice @relation("DpSource", fields: [DownPaymentInvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([InvoiceId, DownPaymentInvoiceId])
+  @@index([DownPaymentInvoiceId])
+  @@map("tr_ap_down_payment_application")
+}
+
+/// One payment document for every outflow: AP invoices (old OPAP), cash advance
+/// disbursement (old OPCA), reimbursement (old Staging OP) and settlement top-up.
+/// Replaces 4 tables with separate IsPosted/IsPaid flags and MUFG endpoints.
+model Payment {
+  DocumentId            BigInt    @id
+  DocType               String    @default("PAY") @db.VarChar(3)
+  Purpose               String    @db.VarChar(20) /// AP_INVOICE | CASH_ADVANCE | REIMBURSEMENT | SETTLEMENT_TOPUP
+  PayeeType             String    @db.VarChar(10) /// BP | EMPLOYEE
+  BpBankAccountId       BigInt? /// when PayeeType = BP
+  EmployeeBankAccountId BigInt? /// when PayeeType = EMPLOYEE
+  CompanyBankAccountId  Int /// source account (old TrsfrAcct / GLBankAccount)
+  PaymentMethod         String    @default("TRANSFER") @db.VarChar(10) /// TRANSFER | GIRO | CASH
+  PlannedDate           DateTime? @db.Date /// old TransferPlanDate / PlanPaymentDate
+  PostedAt              DateTime? @db.Timestamptz(3) /// bank accepted (old IsPosted)
+  PaidDate              DateTime? @db.Date /// funds transferred (old IsPaid)
+  BankBatchNo           String?   @db.VarChar(50)
+  BankReference         String?   @db.VarChar(100) /// filtered unique → idempotent callbacks
+  FailureReason         String?   @db.VarChar(500)
+  JournalMemo           String?   @db.VarChar(1000)
+  JournalRemarks        String?   @db.VarChar(1000)
+
+  Document            Document             @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  BpBankAccount       BpBankAccount?       @relation(fields: [BpBankAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  EmployeeBankAccount EmployeeBankAccount? @relation(fields: [EmployeeBankAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CompanyBankAccount  CompanyBankAccount   @relation(fields: [CompanyBankAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Allocations         PaymentAllocation[]
+  BankCallbacks       BankCallback[]
+
+  Lines PaymentLine[]
+
+  @@unique([DocumentId, DocType])
+  @@index([BpBankAccountId])
+  @@index([EmployeeBankAccountId])
+  @@index([Purpose, PaidDate])
+  @@map("tr_payment")
+}
+
+/// GL lines of a payment that are not documents: bank charges, rounding, PPh, other accounts.
+/// Amount > 0 adds to the payment, < 0 reduces it.
+model PaymentLine {
+  Id           BigInt  @id @default(autoincrement())
+  PaymentId    BigInt
+  LineNum      Int     @db.SmallInt
+  CoaId        Int
+  CostCenterId Int?
+  Description  String? @db.VarChar(500)
+  Amount       Decimal @db.Decimal(19, 2)
+
+  Payment    Payment     @relation(fields: [PaymentId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Coa        Coa         @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter CostCenter? @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([PaymentId, LineNum])
+  @@map("tr_payment_line")
+}
+
+/// Which payable documents a payment settles (AP invoice, cash advance, reimbursement,
+/// settlement). Partial payment = several allocations over time.
+model PaymentAllocation {
+  PaymentId               BigInt
+  TargetDocumentId        BigInt
+  AmountApplied           Decimal @db.Decimal(19, 2)
+  DiscountAmount          Decimal @default(0) @db.Decimal(19, 2) /// cash discount taken on this document
+  AmountInPaymentCurrency Decimal @db.Decimal(19, 2) /// what this allocation costs in the payment's currency (= AmountApplied when currencies match — trigger-checked)
+  FxDifferenceBase        Decimal @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (realized FX in IDR = paid IDR − booked IDR; > 0 = loss on payables)
+
+  Payment        Payment  @relation(fields: [PaymentId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  TargetDocument Document @relation(fields: [TargetDocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([PaymentId, TargetDocumentId])
+  @@index([TargetDocumentId])
+  @@map("tr_payment_allocation")
+}
+
+// =====================================================================
+// 9b. EMPLOYEE EXPENSE: CASH ADVANCE, SETTLEMENT, REIMBURSEMENT (tr_)
+// =====================================================================
+
+/// Kasbon. Disbursed by a Payment (Purpose CASH_ADVANCE), accounted for by one Settlement.
+model CashAdvance {
+  DocumentId        BigInt    @id
+  DocType           String    @default("CA") @db.VarChar(3)
+  EmployeeUserId    BigInt /// advance holder (may differ from the requester = Document.OwnerUserId)
+  TransactionTypeId Int
+  Purpose           String    @db.VarChar(1000)
+  RequiredDate      DateTime? @db.Date
+  SettledAt         DateTime? @db.Timestamptz(3)
+  ClosedAt          DateTime? @db.Timestamptz(3) /// Personal Loan only
+
+  Document        Document        @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Employee        Employee        @relation(fields: [EmployeeUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+  TransactionType TransactionType @relation(fields: [TransactionTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Settlements     Settlement[]
+
+  @@unique([DocumentId, DocType])
+  @@index([EmployeeUserId])
+  @@map("tr_cash_advance")
+}
+
+/// Pertanggungjawaban kasbon. Difference > 0 → employee refunds (Receipt);
+/// < 0 → company tops up (Payment SETTLEMENT_TOPUP).
+model Settlement {
+  DocumentId       BigInt  @id
+  DocType          String  @default("STL") @db.VarChar(3)
+  CashAdvanceId    BigInt
+  Purpose          String? @db.VarChar(1000)
+  ReferenceNo      String? @db.VarChar(100)
+  AdvanceAmount    Decimal @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (cash advance AppliedAmount = disbursed)
+  SpentAmount      Decimal @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Σ expense lines)
+  DifferenceAmount Decimal @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Advance − Spent; > 0 refund, < 0 top-up)
+  IsVoid           Boolean @default(false) /// true on REJECTED/CANCELLED — frees the cash advance
+
+  Document    Document    @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  CashAdvance CashAdvance @relation(fields: [CashAdvanceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([DocumentId, DocType])
+  @@index([CashAdvanceId])
+  @@map("tr_settlement")
+}
+
+model Reimbursement {
+  DocumentId        BigInt  @id
+  DocType           String  @default("RMB") @db.VarChar(3)
+  PayeeType         String  @db.VarChar(10) /// EMPLOYEE | BP (BP → Document.BpId)
+  EmployeeUserId    BigInt?
+  TransactionTypeId Int
+  ReferenceNo       String? @db.VarChar(100)
+
+  Document        Document        @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Employee        Employee?       @relation(fields: [EmployeeUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+  TransactionType TransactionType @relation(fields: [TransactionTypeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([DocumentId, DocType])
+  @@index([EmployeeUserId])
+  @@map("tr_reimbursement")
+}
+
+/// Expense lines shared by CA, Settlement and Reimbursement (identical shape in all three).
+/// CoaId is the account at transaction time; ExpenseAccountId only records which mapping was picked.
+model ExpenseLine {
+  Id               BigInt    @id @default(autoincrement())
+  DocumentId       BigInt
+  LineNum          Int       @db.SmallInt
+  ExpenseAccountId Int?
+  CoaId            Int
+  CostCenterId     Int?
+  Description      String    @db.VarChar(500)
+  ExpenseDate      DateTime? @db.Date
+  Amount           Decimal   @db.Decimal(19, 2)
+
+  Document       Document        @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ExpenseAccount ExpenseAccount? @relation(fields: [ExpenseAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Coa            Coa             @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter     CostCenter?     @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([DocumentId, LineNum])
+  @@index([CoaId])
+  @@map("tr_expense_line")
+}
+
+// =====================================================================
+// 9c. AR INVOICE & RECEIPT (tr_)
+// =====================================================================
+
+model ArInvoice {
+  DocumentId             BigInt    @id
+  DocType                String    @default("ARI") @db.VarChar(3)
+  InvoiceKind            String    @db.VarChar(10) /// ITEM | SERVICE | CREDIT_MEMO | DEBIT_MEMO | RETURN
+  OriginalInvoiceId      BigInt? /// for CREDIT_MEMO / DEBIT_MEMO / RETURN
+  CustomerPoNo           String?   @db.VarChar(100) /// old NumAtCard
+  CommercialInvoiceNo    String?   @db.VarChar(30)
+  CustomerTaxId          String?   @db.VarChar(20) /// NPWP at issue time (snapshot)
+  BillToAddress          String?   @db.VarChar(500) /// at issue time (snapshot)
+  ShippingMethod         String?   @db.VarChar(50)
+  InvoiceDate            DateTime  @db.Date
+  DueDate                DateTime? @db.Date
+  PaymentTermId          Int?
+  ReceivingBankAccountId Int?
+  SubtotalAmount         Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Σ line amount)
+  DiscountAmount         Decimal   @default(0) @db.Decimal(19, 2)
+  FreightAmount          Decimal   @default(0) @db.Decimal(19, 2)
+  DownPaymentAmount      Decimal   @default(0) @db.Decimal(19, 2)
+  TaxBaseAmount          Decimal   @db.Decimal(19, 2) /// DPP
+  TaxBaseOtherValue      Decimal?  @db.Decimal(19, 2) /// DPP nilai lain (11/12) for 12% PPN
+  VatTaxCodeId           Int?
+  VatAmount              Decimal   @default(0) @db.Decimal(19, 2)
+  WhtTaxCodeId           Int?
+  WhtBaseAmount          Decimal?  @db.Decimal(19, 2)
+  WhtAmount              Decimal   @default(0) @db.Decimal(19, 2) /// PPh withheld by customer
+  TaxExchangeRate        Decimal?  @db.Decimal(18, 6) /// kurs pajak (KMK) on InvoiceDate; auto-filled by DB if NULL; IDR = 1
+  VatAmountBase          Decimal?  @db.Decimal(19, 0) /// [DB] maintained by trigger — read-only for the app (PPN in rupiah = VatAmount × TaxExchangeRate)
+  WhtAmountBase          Decimal?  @db.Decimal(19, 0) /// [DB] maintained by trigger — read-only for the app (PPh in rupiah)
+  NetReceivable          Decimal   @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (Subtotal − Discount + Freight − DP + PPN − PPh)
+  TaxInvoiceNo           String?   @db.VarChar(30) /// Faktur Pajak keluaran
+  TaxInvoiceQr           String?   @db.Text /// e-Faktur QR payload
+  IsVoid                 Boolean   @default(false)
+
+  Document             Document            @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  PaymentTerm          PaymentTerm?        @relation(fields: [PaymentTermId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReceivingBankAccount CompanyBankAccount? @relation(fields: [ReceivingBankAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode           TaxCode?            @relation("ArInvoiceVat", fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  WhtTaxCode           TaxCode?            @relation("ArInvoiceWht", fields: [WhtTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines                ArInvoiceLine[]
+
+  OriginalInvoice ArInvoice?  @relation("ArAdjustment", fields: [OriginalInvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Adjustments     ArInvoice[] @relation("ArAdjustment")
+
+  @@unique([DocumentId, DocType])
+  @@index([DueDate, IsVoid])
+  @@index([OriginalInvoiceId])
+  @@map("tr_ar_invoice")
+}
+
+model ArInvoiceLine {
+  Id                 BigInt   @id @default(autoincrement())
+  InvoiceId          BigInt
+  LineNum            Int      @db.SmallInt
+  ItemId             BigInt? /// NULL for service lines
+  CustomerItemCode   String?  @db.VarChar(50) /// customer catalog no.
+  Description        String   @db.VarChar(500)
+  Quantity           Decimal  @db.Decimal(18, 4)
+  UomId              Int?
+  UnitPrice          Decimal  @db.Decimal(19, 4)
+  PackSize           Decimal? @db.Decimal(18, 6)
+  InventoryQty       Decimal? @db.Decimal(18, 4)
+  InventoryUnitPrice Decimal? @db.Decimal(19, 6)
+  IsWhtLiable        Boolean  @default(false)
+  DiscountPercent    Decimal  @default(0) @db.Decimal(7, 4)
+  LineAmount         Decimal  @db.Decimal(19, 2) /// after discount, before VAT
+  VatTaxCodeId       Int?
+  VatAmount          Decimal  @default(0) @db.Decimal(19, 2)
+  RevenueCoaId       Int
+  CostCenterId       Int?
+  DeliveryRef        String?  @db.VarChar(50) /// delivery note / surat jalan reference
+
+  Invoice    ArInvoice   @relation(fields: [InvoiceId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Item       Item?       @relation(fields: [ItemId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Uom        Uom?        @relation(fields: [UomId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  VatTaxCode TaxCode?    @relation(fields: [VatTaxCodeId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  RevenueCoa Coa         @relation(fields: [RevenueCoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter CostCenter? @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([InvoiceId, LineNum])
+  @@map("tr_ar_invoice_line")
+}
+
+/// Incoming money: customer payment of AR invoices, employee refund of a settlement.
+model Receipt {
+  DocumentId           BigInt   @id
+  DocType              String   @default("RCV") @db.VarChar(3)
+  PayerType            String   @db.VarChar(10) /// BP | EMPLOYEE (BP → Document.BpId)
+  EmployeeUserId       BigInt?
+  ReceiptMethod        String   @default("TRANSFER") @db.VarChar(20) /// TRANSFER | CASH | PAYROLL_DEDUCTION
+  CompanyBankAccountId Int? /// required unless PAYROLL_DEDUCTION
+  ReceivedDate         DateTime @db.Date
+  Amount               Decimal  @db.Decimal(19, 2) /// copied to tr_document.TotalAmount by trigger; Σ allocations ≤ Amount (trigger)
+  BankReference        String?  @db.VarChar(100)
+
+  Document           Document            @relation(fields: [DocumentId, DocType], references: [Id, DocType], onDelete: NoAction, onUpdate: NoAction)
+  Employee           Employee?           @relation(fields: [EmployeeUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+  CompanyBankAccount CompanyBankAccount? @relation(fields: [CompanyBankAccountId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Allocations        ReceiptAllocation[]
+
+  @@unique([DocumentId, DocType])
+  @@map("tr_receipt")
+}
+
+model ReceiptAllocation {
+  ReceiptId               BigInt
+  TargetDocumentId        BigInt
+  AmountApplied           Decimal @db.Decimal(19, 2)
+  AmountInReceiptCurrency Decimal @db.Decimal(19, 2) /// what this allocation uses of the receipt, in the receipt's currency
+  FxDifferenceBase        Decimal @default(0) @db.Decimal(19, 2) /// [DB] maintained by trigger — read-only for the app (realized FX in IDR = received IDR − booked IDR; > 0 = gain on receivables)
+
+  Receipt        Receipt  @relation(fields: [ReceiptId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  TargetDocument Document @relation(fields: [TargetDocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([ReceiptId, TargetDocumentId])
+  @@index([TargetDocumentId])
+  @@map("tr_receipt_allocation")
+}
+
+// =====================================================================
+// 9d. GENERAL LEDGER (tr_journal_*)
+//     Posted by the backend when GR / AP / AR / CA / STL / RMB / PAY / RCV
+//     reach their posting status. ExportedAt/ExternalRef allow sending the
+//     journals to an external accounting system instead (open question Q1).
+// =====================================================================
+
+model JournalEntry {
+  Id               BigInt    @id @default(autoincrement())
+  JournalNo        String    @unique @db.VarChar(30)
+  PostingDate      DateTime  @db.Date
+  SourceDocumentId BigInt? /// NULL = manual journal
+  Memo             String?   @db.VarChar(500)
+  Status           String    @default("DRAFT") @db.VarChar(10) /// DRAFT (proposed, e.g. printed on a voucher) | POSTED | REVERSED
+  ReversalOfId     BigInt? /// this entry reverses another (filtered unique: one reversal each)
+  ExportedAt       DateTime? @db.Timestamptz(3)
+  ExternalRef      String?   @db.VarChar(50)
+  CreatedAt        DateTime  @default(now()) @db.Timestamptz(3)
+  CreatedBy        BigInt?
+
+  SourceDocument Document?      @relation(fields: [SourceDocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReversalOf     JournalEntry?  @relation("JournalReversal", fields: [ReversalOfId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Reversals      JournalEntry[] @relation("JournalReversal")
+  Lines          JournalLine[]
+
+  FxRevaluations         FxRevaluation[] @relation("FxRevaluationJournal")
+  FxRevaluationReversals FxRevaluation[] @relation("FxRevaluationReversal")
+
+  @@index([SourceDocumentId])
+  @@index([PostingDate])
+  @@index([ExportedAt])
+  @@map("tr_journal_entry")
+}
+
+/// Σ Debit = Σ Credit per entry is enforced by the posting service and checked by vw_journal_unbalanced.
+model JournalLine {
+  Id             BigInt   @id @default(autoincrement())
+  JournalId      BigInt
+  LineNum        Int      @db.SmallInt
+  CoaId          Int
+  Debit          Decimal  @default(0) @db.Decimal(19, 2) /// base currency (IDR)
+  Credit         Decimal  @default(0) @db.Decimal(19, 2)
+  CurrencyCode   String   @default("IDR") @db.Char(3)
+  AmountFc       Decimal? @db.Decimal(19, 2) /// original currency amount
+  CostCenterId   Int?
+  BpId           BigInt? /// sub-ledger: AP / AR
+  EmployeeUserId BigInt? /// sub-ledger: employee advance
+  Description    String?  @db.VarChar(500)
+
+  Journal         JournalEntry     @relation(fields: [JournalId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Coa             Coa              @relation(fields: [CoaId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency        Currency         @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+  CostCenter      CostCenter?      @relation(fields: [CostCenterId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  BusinessPartner BusinessPartner? @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Employee        Employee?        @relation(fields: [EmployeeUserId], references: [UserId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([JournalId, LineNum])
+  @@index([CoaId])
+  @@index([BpId])
+  @@index([EmployeeUserId])
+  @@map("tr_journal_line")
+}
+
+// =====================================================================
+// 9e. FX REVALUATION (tr_fx_*) — month-end unrealized gain/loss on open
+//     foreign-currency AP/AR (INV, ARI), reversed at the start of next period.
+// =====================================================================
+
+model FxRevaluation {
+  Id                BigInt   @id @default(autoincrement())
+  RevaluationDate   DateTime @db.Date
+  RateType          String   @default("MIDDLE") @db.VarChar(10)
+  Status            String   @default("DRAFT") @db.VarChar(10) /// DRAFT | POSTED | REVERSED
+  JournalId         BigInt?
+  ReversalJournalId BigInt?
+  CreatedAt         DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy         BigInt?
+
+  Journal         JournalEntry?       @relation("FxRevaluationJournal", fields: [JournalId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReversalJournal JournalEntry?       @relation("FxRevaluationReversal", fields: [ReversalJournalId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Lines           FxRevaluationLine[]
+
+  @@index([RevaluationDate])
+  @@map("tr_fx_revaluation")
+}
+
+model FxRevaluationLine {
+  Id             BigInt  @id @default(autoincrement())
+  RevaluationId  BigInt
+  DocumentId     BigInt /// open INV / ARI in foreign currency
+  CurrencyCode   String  @db.Char(3)
+  OpenAmount     Decimal @db.Decimal(19, 2) /// outstanding in document currency
+  BookRate       Decimal @db.Decimal(18, 6) /// rate the open amount is carried at
+  RevalRate      Decimal @db.Decimal(18, 6) /// closing rate
+  DifferenceBase Decimal @db.Decimal(19, 2) /// = ROUND(Open × RevalRate) − ROUND(Open × BookRate) (CHECK)
+
+  Revaluation FxRevaluation @relation(fields: [RevaluationId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Document    Document      @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Currency    Currency      @relation(fields: [CurrencyCode], references: [Code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([RevaluationId, DocumentId])
+  @@index([DocumentId])
+  @@map("tr_fx_revaluation_line")
+}
+
+/// Approver chosen by the preparer per step code while the document is still a draft (old form
+/// fields Checked/Acknowledged/Approved/Received/Closed-by). Used by template steps of type
+/// PREPARER_MAPPING_PICK / REQUESTER_PICK when the approval round is opened.
+model DocumentApproverPick {
+  DocumentId BigInt
+  StepCode   String   @db.VarChar(5) /// CH | AC | AP | RE | CL
+  UserId     BigInt
+  CreatedAt  DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy  BigInt?
+
+  Document Document @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  User     User     @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([DocumentId, StepCode])
+  @@index([UserId])
+  @@map("tr_document_approver_pick")
+}
+
+// =====================================================================
+// 10. APPROVAL RUNTIME (tr_approval_*)
+// =====================================================================
+
+/// One request per approval round. Resubmission after RETURNED opens RoundNo + 1.
+model ApprovalRequest {
+  Id          BigInt    @id @default(autoincrement())
+  DocumentId  BigInt
+  TemplateId  Int
+  RoundNo     Int       @db.SmallInt
+  Status      String    @default("PENDING") @db.VarChar(10) /// PENDING | APPROVED | REJECTED | RETURNED | CANCELLED
+  StartedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  CompletedAt DateTime? @db.Timestamptz(3)
+
+  Document Document         @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Template ApprovalTemplate @relation(fields: [TemplateId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Tasks    ApprovalTask[]
+
+  @@unique([DocumentId, RoundNo])
+  @@index([TemplateId])
+  @@map("tr_approval_request")
+}
+
+/// One row per approver per step: the decision, who actually acted, and in what capacity.
+model ApprovalTask {
+  Id                BigInt    @id @default(autoincrement())
+  PublicId          String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  ApprovalRequestId BigInt
+  StepNo            Int       @db.SmallInt
+  AssigneeUserId    BigInt
+  Status            String    @default("WAITING") @db.VarChar(10) /// WAITING | PENDING | APPROVED | REJECTED | RETURNED | SKIPPED | CANCELLED | REASSIGNED
+  ReceivedAt        DateTime? @db.Timestamptz(3) /// "receive" action of the old invoice flow
+  DueAt             DateTime? @db.Timestamptz(3)
+  ActedByUserId     BigInt?
+  ActingAs          String?   @db.VarChar(10) /// SELF | DELEGATE | BACKUP | SUPERIOR
+  ActedAt           DateTime? @db.Timestamptz(3)
+  ActorJobTitle     String?   @db.VarChar(100) /// [DB] maintained by trigger — read-only for the app (job title of the acting user at decision time, for printing)
+  Remarks           String?   @db.VarChar(1000) /// required on REJECTED / RETURNED (CHECK)
+  ReplacesTaskId    BigInt? /// the REASSIGNED task this one took over (resign, transfer, leave)
+  Version           Int       @default(0) /// optimistic concurrency against double approval
+
+  Request      ApprovalRequest @relation(fields: [ApprovalRequestId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Assignee     User            @relation("TaskAssignee", fields: [AssigneeUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ActedBy      User?           @relation("TaskActedBy", fields: [ActedByUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReplacesTask ApprovalTask?   @relation("TaskReassignment", fields: [ReplacesTaskId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ReplacedBy   ApprovalTask[]  @relation("TaskReassignment")
+
+  ReassignedIn  ApprovalReassignmentItem[] @relation("ReassignOldTask")
+  CreatedByMove ApprovalReassignmentItem[] @relation("ReassignNewTask")
+
+  @@index([ApprovalRequestId, StepNo]) // uniqueness per live assignee: filtered index in constraints.sql
+  @@index([AssigneeUserId, Status])
+  @@index([ActedByUserId, ActedAt])
+  @@map("tr_approval_task")
+}
+
+model Notification {
+  Id              BigInt    @id @default(autoincrement())
+  PublicId        String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  RecipientUserId BigInt
+  DocumentId      BigInt?
+  EventType       String    @db.VarChar(40) /// APPROVAL_PENDING, RFQ_INVITED, PO_ISSUED, BP_REVISION_REQUIRED…
+  Title           String    @db.VarChar(200)
+  Body            String?   @db.VarChar(1000)
+  ReadAt          DateTime? @db.Timestamptz(3)
+  EmailStatus     String    @default("NONE") @db.VarChar(10) /// NONE | QUEUED | SENT | FAILED
+  EmailSentAt     DateTime? @db.Timestamptz(3)
+  EmailError      String?   @db.VarChar(1000)
+  CreatedAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  Recipient User      @relation(fields: [RecipientUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Document  Document? @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([RecipientUserId, ReadAt, CreatedAt(sort: Desc)])
+  @@map("tr_notification")
+}
+
+/// Handover of one person's work to another (resign, transfer, long leave).
+/// Backend: insert this row (OPEN) → EXEC sp_set_session_context 'kpin.handover_id', <Id> →
+/// move documents / mappings / PIC / org roles (approval tasks move only via an APPROVED tr_approval_reassignment) → set COMPLETED → clear the context,
+/// all in ONE transaction. Every moved item is logged to hist_handover_item by trigger,
+/// and while OPEN the database rejects moving anything to anyone but ToUserId.
+model UserHandover {
+  Id                   BigInt    @id @default(autoincrement())
+  FromUserId           BigInt
+  ToUserId             BigInt
+  Reason               String    @db.VarChar(15) /// RESIGNED | TERMINATED | RETIRED | TRANSFERRED | LEAVE
+  EffectiveDate        DateTime  @db.Date
+  Status               String    @default("OPEN") @db.VarChar(10) /// OPEN | COMPLETED | CANCELLED
+  CompletedAt          DateTime? @db.Timestamptz(3)
+  DocumentsTransferred Int       @default(0) /// [DB] maintained by trigger — read-only for the app
+  MappingsTransferred  Int       @default(0) /// [DB] maintained by trigger — read-only for the app (approver mappings + template steps)
+  PicRolesTransferred  Int       @default(0) /// [DB] maintained by trigger — read-only for the app
+  OrgRolesTransferred  Int       @default(0) /// [DB] maintained by trigger — read-only for the app (department head + superior of subordinates)
+  Remarks              String?   @db.VarChar(1000)
+  ExecutedBy           BigInt
+  ExecutedAt           DateTime  @default(now()) @db.Timestamptz(3)
+
+  FromUser User           @relation("HandoverFrom", fields: [FromUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ToUser   User           @relation("HandoverTo", fields: [ToUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Items    HandoverItem[]
+
+  Reassignments ApprovalReassignment[]
+
+  @@index([FromUserId])
+  @@index([ToUserId])
+  @@map("tr_user_handover")
+}
+
+/// One row per item moved in a handover — written only by triggers.
+model HandoverItem {
+  Id         BigInt   @id @default(autoincrement())
+  HandoverId BigInt
+  ItemType   String   @db.VarChar(20) /// DOCUMENT_OWNER | APPROVER_MAPPING | TEMPLATE_STEP | BP_PIC | DEPARTMENT_HEAD | SUPERIOR
+  RecordKey  String   @db.VarChar(100) /// id of the moved row (task id, document id, mapping id, "bpId|role", …)
+  OldUserId  BigInt?
+  NewUserId  BigInt? /// NULL = role ended without successor (e.g. PIC deactivated)
+  Detail     String?  @db.VarChar(300)
+  LoggedAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  Handover UserHandover @relation(fields: [HandoverId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([HandoverId, ItemType])
+  @@index([ItemType, RecordKey])
+  @@map("hist_handover_item")
+}
+
+// =====================================================================
+// 10b. APPROVAL REASSIGNMENT (tr_approval_reassignment*)
+//      The ONLY way an approval task changes hands. A request names the tasks,
+//      the new assignee and the superior who must approve it; nothing moves
+//      until that superior approves. The request itself is the permanent record.
+// =====================================================================
+
+model ApprovalReassignment {
+  Id              BigInt    @id @default(autoincrement())
+  PublicId        String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// use in URLs, never Id
+  FromUserId      BigInt /// current assignee of the tasks
+  ToUserId        BigInt /// proposed new assignee
+  Reason          String    @db.VarChar(15) /// RESIGNED | TRANSFERRED | LEAVE | WORKLOAD | WRONG_ASSIGNEE | OTHER
+  Remarks         String    @db.VarChar(1000) /// why — copied to the REASSIGNED tasks
+  RequestedBy     BigInt
+  RequestedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  ApproverUserId  BigInt /// the superior chosen to approve (must be in FromUser's superior chain)
+  Status          String    @default("PENDING") @db.VarChar(10) /// PENDING | APPROVED | REJECTED | CANCELLED
+  DecidedAt       DateTime? @db.Timestamptz(3)
+  DecisionRemarks String?   @db.VarChar(1000) /// required on REJECTED
+  HandoverId      BigInt? /// when raised as part of a resign / transfer handover
+
+  FromUser  User                       @relation("ReassignFrom", fields: [FromUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  ToUser    User                       @relation("ReassignTo", fields: [ToUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Requester User                       @relation("ReassignRequestedBy", fields: [RequestedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Approver  User                       @relation("ReassignApprover", fields: [ApproverUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Handover  UserHandover?              @relation(fields: [HandoverId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Items     ApprovalReassignmentItem[]
+
+  @@index([ApproverUserId, Status]) // superior's inbox
+  @@index([FromUserId, Status])
+  @@index([ToUserId])
+  @@index([HandoverId])
+  @@map("tr_approval_reassignment")
+}
+
+/// Tasks in the request. NewTaskId is filled by the database when the replacement task is created.
+model ApprovalReassignmentItem {
+  Id             BigInt  @id @default(autoincrement())
+  ReassignmentId BigInt
+  OldTaskId      BigInt /// task of FromUser (PENDING / WAITING when requested)
+  NewTaskId      BigInt? /// [DB] set by trigger when the task for ToUser is created
+
+  Reassignment ApprovalReassignment @relation(fields: [ReassignmentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  OldTask      ApprovalTask         @relation("ReassignOldTask", fields: [OldTaskId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  NewTask      ApprovalTask?        @relation("ReassignNewTask", fields: [NewTaskId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([ReassignmentId, OldTaskId])
+  @@index([OldTaskId])
+  @@map("tr_approval_reassignment_item")
+}
+
+// =====================================================================
+// 11. HISTORY & AUDIT (hist_) — append-only
+// =====================================================================
+
+/// Every status change of every document.
+model DocumentStatusHistory {
+  Id          BigInt   @id @default(autoincrement())
+  DocumentId  BigInt
+  FromStatus  String?  @db.VarChar(20)
+  ToStatus    String   @db.VarChar(20)
+  ActorUserId BigInt
+  Remarks     String?  @db.VarChar(1000)
+  ActedAt     DateTime @default(now()) @db.Timestamptz(3)
+
+  Document Document @relation(fields: [DocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Actor    User     @relation(fields: [ActorUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([DocumentId, ActedAt])
+  @@map("hist_document_status")
+}
+
+/// Every change of OnboardingStatus / OperationalStatus.
+model BpStatusHistory {
+  Id             BigInt   @id @default(autoincrement())
+  BpId           BigInt
+  StatusKind     String   @db.VarChar(12) /// ONBOARDING | OPERATIONAL
+  FromStatus     String?  @db.VarChar(20)
+  ToStatus       String   @db.VarChar(20)
+  Reason         String?  @db.VarChar(1000) /// required for SUSPENDED / BLACKLISTED / REJECTED (CHECK)
+  VerificationId BigInt?
+  ActorUserId    BigInt
+  ActedAt        DateTime @default(now()) @db.Timestamptz(3)
+
+  BusinessPartner BusinessPartner @relation(fields: [BpId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Verification    BpVerification? @relation(fields: [VerificationId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+  Actor           User            @relation(fields: [ActorUserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([BpId, ActedAt])
+  @@map("hist_bp_status")
+}
+
+/// Field-level change log for master data and PO revisions, written by a Prisma
+/// client extension in the same transaction. Changes = JSON {"Field":[old,new]} —
+/// a log payload, never queried relationally.
+model AuditLog {
+  Id            BigInt   @id @default(autoincrement())
+  TableName     String   @db.VarChar(64)
+  RecordKey     String   @db.VarChar(100)
+  Action        String   @db.VarChar(6) /// INSERT | UPDATE | DELETE
+  Changes       String   @db.Text
+  ActorUserId   BigInt?
+  CorrelationId String?  @db.VarChar(64)
+  OccurredAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([TableName, RecordKey, OccurredAt])
+  @@index([ActorUserId, OccurredAt])
+  @@map("hist_audit_log")
+}
+
+/// Security event log (point-in-time). Login sessions themselves live in sys_user_session.
+/// HTTP request logs belong in App Insights, not here.
+model UserActivity {
+  Id         BigInt   @id @default(autoincrement())
+  UserId     BigInt? /// NULL for failed login on unknown e-mail
+  SessionId  BigInt? /// set for events inside a session (LOGIN, LOGOUT, SESSION_REVOKED…)
+  Email      String?  @db.VarChar(254)
+  Action     String   @db.VarChar(30) /// LOGIN | LOGIN_FAILED | LOGOUT | SESSION_EXPIRED | SESSION_REVOKED | TOKEN_REUSE_DETECTED | LOCKED_OUT | PASSWORD_CHANGED | PASSWORD_RESET | ROLE_CHANGED | ACTIVATED | DEACTIVATED | BP_LINKED | BP_UNLINKED
+  IpAddress  String?  @db.VarChar(45)
+  UserAgent  String?  @db.VarChar(500)
+  Detail     String?  @db.VarChar(500) /// e.g. failure reason: WRONG_PASSWORD, USER_DISABLED, OTP_EXPIRED
+  OccurredAt DateTime @default(now()) @db.Timestamptz(3)
+
+  User    User?        @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  Session UserSession? @relation(fields: [SessionId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([UserId, OccurredAt])
+  @@index([SessionId])
+  @@index([Action, OccurredAt])
+  @@index([OccurredAt])
+  @@map("hist_user_activity")
+}
+
+/// One row per exchange-rate import run (scheduled BI / KMK job, SAP ORTT sync during transition,
+/// or a manual file upload) — Finance can see whether today's rate arrived.
+model RateImportLog {
+  Id            BigInt    @id @default(autoincrement())
+  Source        String    @db.VarChar(20) /// BI | KMK | SAP_ORTT | MANUAL_FILE
+  RateType      String    @db.VarChar(10) /// MIDDLE | TAX | BANK
+  EffectiveDate DateTime  @db.Date /// rate date the run was meant to load
+  StartedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  FinishedAt    DateTime? @db.Timestamptz(3)
+  Status        String    @default("RUNNING") @db.VarChar(10) /// RUNNING | SUCCESS | PARTIAL | FAILED
+  RowsInserted  Int       @default(0)
+  RowsUpdated   Int       @default(0)
+  ErrorMessage  String?   @db.VarChar(2000)
+  TriggeredBy   BigInt? /// user for manual runs; NULL = scheduler
+
+  @@index([RateType, EffectiveDate])
+  @@index([StartedAt])
+  @@map("hist_rate_import")
+}
+
+/// Sensitive READ activity the database cannot see by itself (written by the API, append-only):
+/// opening the deleted-data page, downloading / printing / exporting, revealing bank accounts.
+model AccessLog {
+  Id         BigInt   @id @default(autoincrement())
+  UserId     BigInt
+  Action     String   @db.VarChar(20) /// VIEW_DELETED | DOWNLOAD_FILE | PRINT | EXPORT | VIEW_SENSITIVE
+  ObjectType String   @db.VarChar(40) /// table or report name, e.g. tr_document, sys_file, report:ap_aging
+  ObjectKey  String?  @db.VarChar(100) /// PublicId / id of the object (NULL for list or report access)
+  Detail     String?  @db.VarChar(500) /// filter used, file name, row count…
+  IpAddress  String?  @db.VarChar(45)
+  OccurredAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([UserId, OccurredAt])
+  @@index([ObjectType, ObjectKey])
+  @@index([OccurredAt])
+  @@map("hist_access_log")
+}
+
+/// Every bank (MUFG) callback, applied or not — idempotency and dispute trail.
+/// Replaces the two MUFG controllers that silently overwrote IsPosted/IsPaid.
+model BankCallback {
+  Id                BigInt   @id @default(autoincrement())
+  Provider          String   @default("MUFG") @db.VarChar(20)
+  EventType         String   @db.VarChar(10) /// POSTED | PAID | FAILED
+  ExternalReference String?  @db.VarChar(100)
+  PaymentId         BigInt?
+  TargetDocumentId  BigInt? /// document the callback was matched to (invoice) when no payment row exists (migration period)
+  MatchedBy         String?  @db.VarChar(20) /// BANK_REFERENCE | DOC_NO | LEGACY_INVOICE_NO | BP_INVOICE_NO | TAX_INVOICE_NO | DOCUMENT_REFERENCE
+  Payload           String   @db.Text
+  ReceivedAt        DateTime @default(now()) @db.Timestamptz(3)
+  ProcessResult     String   @db.VarChar(15) /// APPLIED | DUPLICATE | NOT_FOUND | INVALID_STATE | ERROR
+  ErrorMessage      String?  @db.VarChar(1000)
+
+  Payment Payment? @relation(fields: [PaymentId], references: [DocumentId], onDelete: NoAction, onUpdate: NoAction)
+
+  TargetDocument Document? @relation(fields: [TargetDocumentId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([PaymentId])
+  @@index([ExternalReference])
+  @@index([ReceivedAt])
+  @@index([TargetDocumentId])
+  @@map("hist_bank_callback")
+}
+
+// =====================================================================
+// 12. SYSTEM (sys_)
+// =====================================================================
+
+/// File metadata only — bytes live in Azure Blob, never in SQL.
+model StoredFile {
+  Id              BigInt    @id @default(autoincrement())
+  PublicId        String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  StorageProvider String    @default("AZURE_BLOB") @db.VarChar(20)
+  StorageKey      String    @db.VarChar(500)
+  OriginalName    String    @db.VarChar(255)
+  ContentType     String    @db.VarChar(100)
+  SizeBytes       BigInt
+  Sha256          Bytes
+  UploadedBy      BigInt
+  UploadedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  ScanStatus      String    @default("PENDING") @db.VarChar(10) /// PENDING | CLEAN | INFECTED — only CLEAN files may be served or attached
+  ScannedAt       DateTime? @db.Timestamptz(3)
+
+  Uploader          User                 @relation(fields: [UploadedBy], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  BpDocuments       BpDocument[]
+  BankProofs        BpBankAccount[]
+  Attachments       DocumentAttachment[] @relation("AttachmentFile")
+  SignedAttachments DocumentAttachment[] @relation("AttachmentSignedFile")
+
+  SignatureOf        User[]               @relation("UserSignature")
+  StampedAttachments DocumentAttachment[] @relation("AttachmentStampedFile")
+
+  @@unique([StorageProvider, StorageKey])
+  @@index([UploadedBy])
+  @@map("sys_file")
+}
+
+/// One row per login, from sign-in to sign-out. Never deleted (audit trail):
+/// "who is logged in now", "how long", "from which device", "force logout".
+/// Access tokens carry PublicId as `sid`; revoking the session kills all its tokens.
+model UserSession {
+  Id            BigInt    @id @default(autoincrement())
+  PublicId      String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid /// `sid` claim
+  UserId        BigInt
+  AuthMethod    String    @db.VarChar(15) /// PASSWORD | PASSWORD_OTP | ENTRA_ID
+  IpAddress     String?   @db.VarChar(45)
+  UserAgent     String?   @db.VarChar(500)
+  DeviceLabel   String?   @db.VarChar(100) /// parsed, e.g. "Chrome 131 / Windows 11"
+  StartedAt     DateTime  @default(now()) @db.Timestamptz(3)
+  LastSeenAt    DateTime  @default(now()) @db.Timestamptz(3) /// bumped on token refresh, not on every request
+  CsrfTokenHash Bytes? /// SHA-256 of the session's CSRF token (rotated with the refresh token)
+  CsrfIssuedAt  DateTime? @db.Timestamptz(3)
+  ExpiresAt     DateTime  @db.Timestamptz(3) /// absolute session lifetime
+  EndedAt       DateTime? @db.Timestamptz(3) /// NULL = still active
+  EndReason     String?   @db.VarChar(20) /// LOGOUT | IDLE_TIMEOUT | EXPIRED | REVOKED_BY_ADMIN | PASSWORD_CHANGED | TOKEN_REUSE | USER_DISABLED
+  EndedBy       BigInt? /// admin who forced the logout (NULL when the user/system ended it)
+
+  User          User           @relation(fields: [UserId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+  RefreshTokens RefreshToken[]
+  Activities    UserActivity[]
+
+  @@index([UserId, StartedAt(sort: Desc)])
+  @@index([StartedAt])
+  @@map("sys_user_session")
+}
+
+/// Rotating refresh tokens of a session. A revoked token presented again = theft
+/// → the whole session is ended with EndReason TOKEN_REUSE.
+model RefreshToken {
+  Id        BigInt    @id @default(autoincrement())
+  SessionId BigInt
+  TokenHash Bytes     @unique /// SHA-256, never the raw token
+  ExpiresAt DateTime  @db.Timestamptz(3)
+  RotatedAt DateTime? @db.Timestamptz(3) /// replaced by a newer token in the same session
+  RevokedAt DateTime? @db.Timestamptz(3)
+  CreatedAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  Session UserSession @relation(fields: [SessionId], references: [Id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([SessionId])
+  @@map("sys_refresh_token")
+}
+
+/// Shared rate-limit counters for all API instances (old tr_rate_limit). Use Redis instead if available.
+model RateLimit {
+  Key           String   @id @db.VarChar(200) /// e.g. "login:ip:1.2.3.4", "otp:email:x@y"
+  HitCount      Int      @default(0)
+  WindowStartAt DateTime @db.Timestamptz(3)
+  ResetAt       DateTime @db.Timestamptz(3)
+
+  @@index([ResetAt])
+  @@map("sys_rate_limit")
+}
+
+model OneTimeCode {
+  Id            BigInt    @id @default(autoincrement())
+  Email         String    @db.VarChar(254)
+  Purpose       String    @db.VarChar(20) /// LOGIN | EMAIL_VERIFY | PASSWORD_RESET
+  CodeHash      Bytes
+  Attempts      Int       @default(0) @db.SmallInt
+  ExpiresAt     DateTime  @db.Timestamptz(3)
+  ConsumedAt    DateTime? @db.Timestamptz(3)
+  VerifiedAt    DateTime? @db.Timestamptz(3) /// code checked (2-step reset: verify, then set password)
+  InvalidatedAt DateTime? @db.Timestamptz(3) /// superseded by a newer code
+  RequestIp     String?   @db.VarChar(45)
+  CreatedAt     DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([Email, Purpose, CreatedAt])
+  @@map("sys_one_time_code")
+}
+
+/// Document numbering, one counter per series and period. Numbers are drawn only through
+/// dbo.usp_next_number (atomic, formats the DocNo, opens a new monthly period automatically). Lock the row (UPDLOCK, HOLDLOCK)
+/// inside the document's transaction. Examples: PR → PR/001/1126, CA → ADV/001/1126,
+/// PAY_CA → ADV/VCR/001/1126, PAY_RMB → REIM/VCR/001/1126, STL → ADV/SET/001A/1126.
+model NumberSeries {
+  SeriesCode String @db.VarChar(20) /// PR, PO, CA, STL, RMB, ARI, PAY_AP, PAY_CA, PAY_RMB, RCV, JE…
+  PeriodKey  String @db.Char(6) /// 'YYYYMM' for monthly reset, '000000' for never
+  Prefix     String @db.VarChar(20)
+  Format     String @default("{PREFIX}/{SEQ:3}/{MM}{YY}") @db.VarChar(50)
+  LastNumber Int    @default(0)
+  AllowPortal Boolean @default(false) /// portal users may draw numbers from this series (quotation / invoice / verification)
+
+  @@id([SeriesCode, PeriodKey])
+  @@map("sys_number_series")
+}
+
+model IpAllowList {
+  Id          Int      @id @default(autoincrement())
+  IpOrCidr    String   @unique @db.VarChar(50)
+  Description String?  @db.VarChar(200)
+  IsActive    Boolean  @default(true)
+  CreatedAt   DateTime @default(now()) @db.Timestamptz(3)
+  CreatedBy   BigInt?
+
+  @@map("sys_ip_allow_list")
+}

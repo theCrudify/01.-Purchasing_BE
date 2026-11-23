@@ -1,0 +1,10 @@
+name = "kpin-api"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGINS = "http://localhost:3917"   # comma list; set the Vercel URL in the dashboard / [env.production]
+COOKIE_SECURE = "false"
+
+# Secrets (never in this file):  wrangler secret put DATABASE_URL | JWT_SECRET
