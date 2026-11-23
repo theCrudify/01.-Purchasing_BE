@@ -150,6 +150,93 @@ export class ProcurementService {
     })
   }
 
+  updatePr(publicId: string, d: PrCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DepartmentId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.departmentId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'PR')
+      await repo.insertPr(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateRfq(publicId: string, d: RfqCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DepartmentId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.departmentId ?? null, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'RFQ')
+      await repo.insertRfq(curr.id, d, this.actor.id)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateQuo(publicId: string, d: QuoCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      const bpId = await repo.resolveBpId(d.bpId)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "BpId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'QUO')
+      await repo.insertQuo(curr.id, bpId, d, this.actor.id)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateCtr(publicId: string, d: CtrCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      const bpId = await repo.resolveBpId(d.bpId)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "BpId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'CTR')
+      await repo.insertCtr(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updatePo(publicId: string, d: PoCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      const bpId = await repo.resolveBpId(d.bpId)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "BpId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'PO')
+      await repo.insertPo(curr.id, d)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
+  updateGr(publicId: string, d: GrCreate) {
+    return this.db.session(this.actor, async (q) => {
+      const curr = await loadDocument(q, this.actor, publicId, { lock: true })
+      const repo = new ProcurementRepository(q)
+      await q.query(
+        `UPDATE tr_document SET "Title"=$2, "DocDate"=$3, "Remarks"=$4, "UpdatedBy"=$5, "Version"="Version"+1 WHERE "Id"=$1`,
+        [curr.id, d.title, d.receivedDate, d.remarks ?? null, this.actor.id]
+      )
+      await repo.clearSubtypeForUpdate(curr.id, 'GR')
+      await repo.insertGr(curr.id, d, this.actor.id)
+      return { id: curr.publicId, docNo: curr.docNo }
+    })
+  }
+
   submit(publicId: string) {
     return this.db.session(this.actor, async (q) => {
       const d = await loadDocument(q, this.actor, publicId, { lock: true })

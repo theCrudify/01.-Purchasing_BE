@@ -21,17 +21,25 @@ export class DocumentService {
     return this.db.session(this.actor, async (q) => fn(q, await loadDocument(q, this.actor, publicId, { lock }), new DocumentRepository(q)))
   }
 
-  /** Header + status history + approvals + what the caller may do. */
+  /** Header + subtype detail + lines + status history + approvals + what the caller may do. */
   get(publicId: string) {
     return this.run(publicId, async (q, d, r) => {
       const actable = this.isBp ? [] : await new ApprovalRepository(q).actableTasks(d.id, this.actor.id)
       const { id: _i, bpId: _b, ownerUserId, createdBy: _c, ...header } = d
+      const [detail, lines, history, approvals] = await Promise.all([
+        r.subtypeDetail(d.id, d.docType),
+        r.subtypeLines(d.id, d.docType),
+        r.history(d.id),
+        this.isBp ? Promise.resolve([]) : new ApprovalRepository(q).history(d.id),
+      ])
       return {
         ...header,
         id: d.publicId,
         isOwner: ownerUserId === this.actor.id,
-        history: await r.history(d.id),
-        approvals: this.isBp ? [] : await new ApprovalRepository(q).history(d.id),
+        detail,
+        lines,
+        history,
+        approvals,
         actableTaskIds: actable.map((t) => t.publicId),
       }
     })

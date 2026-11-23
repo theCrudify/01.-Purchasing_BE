@@ -153,6 +153,163 @@ export class DocumentRepository {
       [docId, actorId, body, visibility]))[0]
   }
 
+  async subtypeDetail(docId: number, docType: string) {
+    const viewByType: Record<string, string> = {
+      PR: 'vw_doc_pr',
+      RFQ: 'vw_doc_rfq',
+      QUO: 'vw_doc_quo',
+      CTR: 'vw_doc_ctr',
+      PO: 'vw_doc_po',
+      GR: 'vw_doc_gr',
+      SVR: 'vw_doc_svr',
+      CA: 'vw_doc_ca',
+      STL: 'vw_doc_stl',
+      RMB: 'vw_doc_rmb',
+      INV: 'vw_doc_inv',
+      PAY: 'vw_doc_pay',
+      ARI: 'vw_doc_ari',
+    }
+    const vw = viewByType[docType]
+    if (!vw) return null
+    return (await this.q.query<Record<string, unknown>>(`SELECT * FROM ${vw} WHERE "Id"=$1`, [docId]))[0] ?? null
+  }
+
+  async subtypeLines(docId: number, docType: string) {
+    switch (docType) {
+      case 'PR':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."ItemId" AS "itemId", i."Code" AS "itemCode", i."Name" AS "itemName",
+                  l."Description" AS description, l."CategoryId" AS "categoryId", c."Name" AS "categoryName",
+                  l."UomId" AS "uomId", u."Code" AS "uomCode", l."Quantity" AS quantity,
+                  l."EstimatedUnitPrice" AS "estimatedUnitPrice", l."EstimatedUnitPrice" AS "unitPrice",
+                  round(l."Quantity" * COALESCE(l."EstimatedUnitPrice", 0), 2) AS "lineTotal"
+             FROM tr_purchase_request_line l
+             JOIN mst_uom u ON u."Id" = l."UomId"
+             LEFT JOIN mst_item i ON i."Id" = l."ItemId"
+             LEFT JOIN mst_category c ON c."Id" = l."CategoryId"
+            WHERE l."PurchaseRequestId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'RFQ':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."ItemId" AS "itemId", i."Code" AS "itemCode",
+                  l."Description" AS description, l."CategoryId" AS "categoryId", c."Name" AS "categoryName",
+                  l."UomId" AS "uomId", u."Code" AS "uomCode", l."Quantity" AS quantity, l."Specification" AS specification
+             FROM tr_rfq_line l
+             JOIN mst_category c ON c."Id" = l."CategoryId"
+             JOIN mst_uom u ON u."Id" = l."UomId"
+             LEFT JOIN mst_item i ON i."Id" = l."ItemId"
+            WHERE l."RfqId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'QUO':
+        return this.q.query(
+          `SELECT l."Id" AS id, rl."LineNum" AS "lineNum", l."RfqLineId" AS "rfqLineId",
+                  rl."Description" AS description, u."Code" AS "uomCode",
+                  l."Quantity" AS quantity, l."UnitPrice" AS "unitPrice", l."DiscountPercent" AS "discountPercent",
+                  l."LineAmount" AS "lineTotal", l."LeadTimeDays" AS "leadTimeDays"
+             FROM tr_quotation_line l
+             JOIN tr_rfq_line rl ON rl."Id" = l."RfqLineId"
+             JOIN mst_uom u ON u."Id" = rl."UomId"
+            WHERE l."QuotationId"=$1 ORDER BY rl."LineNum"`,
+          [docId]
+        )
+      case 'CTR':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."ItemId" AS "itemId", i."Code" AS "itemCode",
+                  l."Description" AS description, l."UomId" AS "uomId", u."Code" AS "uomCode",
+                  l."TargetQty" AS "targetQty", l."TargetQty" AS quantity, l."UnitPrice" AS "unitPrice",
+                  l."DiscountPercent" AS "discountPercent",
+                  round(l."TargetQty" * l."UnitPrice" * (1 - COALESCE(l."DiscountPercent",0)/100), 2) AS "lineTotal"
+             FROM tr_purchase_contract_line l
+             JOIN mst_uom u ON u."Id" = l."UomId"
+             LEFT JOIN mst_item i ON i."Id" = l."ItemId"
+            WHERE l."ContractId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'PO':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."ItemId" AS "itemId", i."Code" AS "itemCode",
+                  l."Description" AS description, l."UomId" AS "uomId", u."Code" AS "uomCode",
+                  l."Quantity" AS quantity, l."UnitPrice" AS "unitPrice", l."DiscountPercent" AS "discountPercent",
+                  l."LineAmount" AS "lineTotal", l."VatAmount" AS "vatAmount"
+             FROM tr_purchase_order_line l
+             JOIN mst_uom u ON u."Id" = l."UomId"
+             LEFT JOIN mst_item i ON i."Id" = l."ItemId"
+            WHERE l."PurchaseOrderId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'GR':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."PurchaseOrderLineId" AS "poLineId",
+                  pol."Description" AS description, u."Code" AS "uomCode",
+                  l."ReceivedQty" AS "receivedQty", l."AcceptedQty" AS "acceptedQty", l."AcceptedQty" AS quantity,
+                  l."RejectedQty" AS "rejectedQty", l."RejectReason" AS "rejectReason",
+                  pol."UnitPrice" AS "unitPrice", round(l."AcceptedQty" * pol."UnitPrice", 2) AS "lineTotal"
+             FROM tr_goods_receipt_line l
+             JOIN tr_purchase_order_line pol ON pol."Id" = l."PurchaseOrderLineId"
+             JOIN mst_uom u ON u."Id" = pol."UomId"
+            WHERE l."GoodsReceiptId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'CA':
+      case 'STL':
+      case 'RMB':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."CoaId" AS "coaId",
+                  c."AccountCode" AS "itemCode", c."AccountName" AS "itemName",
+                  l."CostCenterId" AS "costCenterId", cc."Code" AS "costCenterCode",
+                  l."Description" AS description, 'EXP' AS "uomCode", 1 AS quantity,
+                  to_char(l."ExpenseDate", 'YYYY-MM-DD') AS "expenseDate",
+                  l."Amount" AS amount, l."Amount" AS "unitPrice", l."Amount" AS "lineTotal"
+             FROM tr_expense_line l
+             JOIN mst_coa c ON c."Id" = l."CoaId"
+             LEFT JOIN mst_cost_center cc ON cc."Id" = l."CostCenterId"
+            WHERE l."DocumentId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'INV':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."CoaId" AS "coaId", c."AccountCode" AS "itemCode",
+                  l."Description" AS description, 'EA' AS "uomCode", l."Quantity" AS quantity,
+                  l."UnitPrice" AS "unitPrice", l."LineAmount" AS "lineTotal", l."VatAmount" AS "vatAmount"
+             FROM tr_ap_invoice_line l
+             LEFT JOIN mst_coa c ON c."Id" = l."CoaId"
+            WHERE l."InvoiceId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'ARI':
+        return this.q.query(
+          `SELECT l."Id" AS id, l."LineNum" AS "lineNum", l."ItemId" AS "itemId",
+                  COALESCE(i."Code", c."AccountCode") AS "itemCode",
+                  l."Description" AS description, l."UomId" AS "uomId", COALESCE(u."Code", 'EA') AS "uomCode",
+                  l."RevenueCoaId" AS "revenueCoaId", l."Quantity" AS quantity,
+                  l."UnitPrice" AS "unitPrice", l."DiscountPercent" AS "discountPercent",
+                  l."LineAmount" AS "lineTotal", l."VatAmount" AS "vatAmount"
+             FROM tr_ar_invoice_line l
+             LEFT JOIN mst_item i ON i."Id" = l."ItemId"
+             LEFT JOIN mst_uom u ON u."Id" = l."UomId"
+             LEFT JOIN mst_coa c ON c."Id" = l."RevenueCoaId"
+            WHERE l."InvoiceId"=$1 ORDER BY l."LineNum"`,
+          [docId]
+        )
+      case 'PAY':
+        return this.q.query(
+          `SELECT pa."TargetDocumentId" AS id, 1 AS "lineNum", td."DocType" AS "itemCode",
+                  td."DocNo" || ' — ' || COALESCE(td."Title", '') AS description,
+                  td."CurrencyCode" AS "uomCode", 1 AS quantity,
+                  pa."AmountApplied" AS "unitPrice", pa."AmountApplied" AS "lineTotal",
+                  td."PublicId" AS "targetDocId", td."DocNo" AS "targetDocNo"
+             FROM tr_payment_allocation pa
+             JOIN tr_document td ON td."Id" = pa."TargetDocumentId"
+            WHERE pa."PaymentId"=$1`,
+          [docId]
+        )
+      default:
+        return []
+    }
+  }
+
   history(docId: number) {
     return this.q.query(
       `SELECT h."Id" AS id, h."FromStatus" AS "fromStatus", h."ToStatus" AS "toStatus", h."Remarks" AS remarks, h."ActedAt" AS "actedAt", u."DisplayName" AS "actorName"
