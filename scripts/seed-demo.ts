@@ -36,7 +36,6 @@ async function run() {
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
 
-    // Assign all permissions to all internal roles for full demo capability
     for (const rId of [roleAdmin, roleBuyer, roleApprover, roleFinance]) {
       await c.query(
         `INSERT INTO mst_role_permission ("RoleId","PermissionId")
@@ -81,21 +80,49 @@ async function run() {
     await c.query(`SET LOCAL purchasing.user_id = '${adminId}'`)
     await c.query(`SET LOCAL purchasing.recalc = '1'`)
 
-    // 3. Business Partners
+    // 3. Business Partners (BpCode has no unique constraint, lookup first)
     console.log('3. Creating Business Partners...')
-    const bp1 = (await c.query(
-      `INSERT INTO mst_business_partner ("BpCode","LegalName","TradeName","EntityType","TaxId","IsSupplier","CountryCode","DefaultCurrencyCode","OnboardingStatus","OperationalStatus","Email")
-       VALUES ('VEND-001','PT Sumber Makmur Sentosa','Sumber Makmur','PT','01.234.567.8-012.000',true,'ID','IDR','VERIFIED','ACTIVE','vendor@supplier.com')
-       ON CONFLICT ("BpCode") DO UPDATE SET "OperationalStatus"='ACTIVE',"OnboardingStatus"='VERIFIED'
-       RETURNING "Id"`
-    )).rows[0].Id
+    async function ensureBp(bp: {
+      bpCode: string
+      legalName: string
+      tradeName: string
+      entityType: string
+      taxId: string
+      email: string
+    }) {
+      const existing = await c.query(`SELECT "Id" FROM mst_business_partner WHERE "BpCode"=$1 LIMIT 1`, [bp.bpCode])
+      if (existing.rows.length > 0) {
+        const id = existing.rows[0].Id
+        await c.query(
+          `UPDATE mst_business_partner SET "OperationalStatus"='ACTIVE',"OnboardingStatus"='VERIFIED',"Email"=$2 WHERE "Id"=$1`,
+          [id, bp.email.toLowerCase()]
+        )
+        return id as number
+      }
+      const res = await c.query(
+        `INSERT INTO mst_business_partner ("BpCode","LegalName","TradeName","EntityType","TaxId","IsSupplier","CountryCode","DefaultCurrencyCode","OnboardingStatus","OperationalStatus","Email")
+         VALUES ($1,$2,$3,$4,$5,true,'ID','IDR','VERIFIED','ACTIVE',$6) RETURNING "Id"`,
+        [bp.bpCode, bp.legalName, bp.tradeName, bp.entityType, bp.taxId, bp.email.toLowerCase()]
+      )
+      return res.rows[0].Id as number
+    }
 
-    const bp2 = (await c.query(
-      `INSERT INTO mst_business_partner ("BpCode","LegalName","TradeName","EntityType","TaxId","IsSupplier","CountryCode","DefaultCurrencyCode","OnboardingStatus","OperationalStatus","Email")
-       VALUES ('VEND-002','CV Mitra Jaya Perkasa','Mitra Jaya','CV','02.345.678.9-023.000',true,'ID','IDR','VERIFIED','ACTIVE','mitra@supplier.com')
-       ON CONFLICT ("BpCode") DO UPDATE SET "OperationalStatus"='ACTIVE',"OnboardingStatus"='VERIFIED'
-       RETURNING "Id"`
-    )).rows[0].Id
+    const bp1 = await ensureBp({
+      bpCode: 'VEND-001',
+      legalName: 'PT Sumber Makmur Sentosa',
+      tradeName: 'Sumber Makmur',
+      entityType: 'PT',
+      taxId: '01.234.567.8-012.000',
+      email: 'vendor@supplier.com',
+    })
+    const bp2 = await ensureBp({
+      bpCode: 'VEND-002',
+      legalName: 'CV Mitra Jaya Perkasa',
+      tradeName: 'Mitra Jaya',
+      entityType: 'CV',
+      taxId: '02.345.678.9-023.000',
+      email: 'mitra@supplier.com',
+    })
 
     await c.query(
       `INSERT INTO mst_bp_user ("BpId","UserId","UserType","AccessRole","IsActive") VALUES ($1,$2,'BP','ADMIN',true)
@@ -123,18 +150,16 @@ async function run() {
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
 
-    // Employees
     await c.query(
       `INSERT INTO mst_employee ("UserId","EmployeeNo","DepartmentId","JobTitle","IsActive") VALUES
-       ($1, 'EMP-001', $2, 'Procurement Director', true),
-       ($3, 'EMP-002', $2, 'Purchasing Specialist / Buyer', true),
-       ($4, 'EMP-003', $2, 'Department Head / Approver', true),
-       ($5, 'EMP-004', $6, 'Finance & Treasury Officer', true)
+       ($1, 'EMP-0001', $2, 'Procurement Director', true),
+       ($3, 'EMP-0002', $2, 'Purchasing Specialist / Buyer', true),
+       ($4, 'EMP-0003', $2, 'Department Head / Approver', true),
+       ($5, 'EMP-0004', $6, 'Finance & Treasury Officer', true)
        ON CONFLICT ("UserId") DO UPDATE SET "DepartmentId"=EXCLUDED."DepartmentId","JobTitle"=EXCLUDED."JobTitle"`,
       [adminId, deptProc, buyerId, approverId, financeId, deptFin]
     )
 
-    // Purchase Classes
     const pcGeneral = (await c.query(
       `INSERT INTO mst_purchase_class ("Code","Name") VALUES ('GENERAL','General Goods & Services')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
@@ -143,30 +168,24 @@ async function run() {
       `INSERT INTO mst_purchase_class ("Code","Name") VALUES ('RAW_MAT','Raw Materials & Chemicals')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
-    const pcAsset = (await c.query(
-      `INSERT INTO mst_purchase_class ("Code","Name") VALUES ('ASSET','Capex & Machinery')
-       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
-    )).rows[0].Id
 
-    // UOMs
     const uomPcs = (await c.query(
-      `INSERT INTO mst_uom ("Code","Name","Decimals") VALUES ('PCS','Pieces',0)
+      `INSERT INTO mst_uom ("Code","Name") VALUES ('PCS','Pieces')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
     const uomBox = (await c.query(
-      `INSERT INTO mst_uom ("Code","Name","Decimals") VALUES ('BOX','Box',0)
+      `INSERT INTO mst_uom ("Code","Name") VALUES ('BOX','Box')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
     const uomKg = (await c.query(
-      `INSERT INTO mst_uom ("Code","Name","Decimals") VALUES ('KG','Kilogram',2)
+      `INSERT INTO mst_uom ("Code","Name") VALUES ('KG','Kilogram')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
     const uomUnit = (await c.query(
-      `INSERT INTO mst_uom ("Code","Name","Decimals") VALUES ('UNIT','Unit',0)
+      `INSERT INTO mst_uom ("Code","Name") VALUES ('UNIT','Unit')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
 
-    // Categories
     const catOffice = (await c.query(
       `INSERT INTO mst_category ("Code","Name") VALUES ('OFFICE_SUPPLIES','Perlengkapan & IT Kantor')
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
@@ -180,79 +199,68 @@ async function run() {
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
 
-    // Payment Terms
     const pt30 = (await c.query(
-      `INSERT INTO mst_payment_term ("Code","Name","Days") VALUES ('NET30','Net 30 Days',30)
+      `INSERT INTO mst_payment_term ("Code","Name","DueDays") VALUES ('NET30','Net 30 Days',30)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
     const pt14 = (await c.query(
-      `INSERT INTO mst_payment_term ("Code","Name","Days") VALUES ('NET14','Net 14 Days',14)
-       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
-    )).rows[0].Id
-    const ptCod = (await c.query(
-      `INSERT INTO mst_payment_term ("Code","Name","Days") VALUES ('COD','Cash On Delivery',0)
+      `INSERT INTO mst_payment_term ("Code","Name","DueDays") VALUES ('NET14','Net 14 Days',14)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`
     )).rows[0].Id
 
-    // Cost Centers
     const ccProc = (await c.query(
       `INSERT INTO mst_cost_center ("Code","Name","DepartmentId") VALUES ('CC-PROC','Cost Center Procurement', $1)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [deptProc]
     )).rows[0].Id
-    const ccEng = (await c.query(
+    await c.query(
       `INSERT INTO mst_cost_center ("Code","Name","DepartmentId") VALUES ('CC-ENG','Cost Center Engineering', $1)
-       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
+       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name"`,
       [deptEng]
-    )).rows[0].Id
+    )
 
-    // Items
     const itmPaper = (await c.query(
-      `INSERT INTO mst_item ("Code","Name","CategoryId","DefaultUomId") VALUES ('ITM-001','Kertas HVS A4 80gr Sinar Dunia',$1,$2)
+      `INSERT INTO mst_item ("Code","Name","ItemType","CategoryId","UomId") VALUES ('ITM-001','Kertas HVS A4 80gr Sinar Dunia','GOODS',$1,$2)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [catOffice, uomBox]
     )).rows[0].Id
     const itmLaptop = (await c.query(
-      `INSERT INTO mst_item ("Code","Name","CategoryId","DefaultUomId") VALUES ('ITM-002','Laptop Lenovo ThinkPad T14 Gen 4',$1,$2)
+      `INSERT INTO mst_item ("Code","Name","ItemType","CategoryId","UomId") VALUES ('ITM-002','Laptop Lenovo ThinkPad T14 Gen 4','GOODS',$1,$2)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [catOffice, uomUnit]
     )).rows[0].Id
     const itmResin = (await c.query(
-      `INSERT INTO mst_item ("Code","Name","CategoryId","DefaultUomId") VALUES ('ITM-003','Bahan Kimia Resin Grade A Industrial',$1,$2)
+      `INSERT INTO mst_item ("Code","Name","ItemType","CategoryId","UomId") VALUES ('ITM-003','Bahan Kimia Resin Grade A Industrial','GOODS',$1,$2)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [catRaw, uomKg]
     )).rows[0].Id
     const itmAc = (await c.query(
-      `INSERT INTO mst_item ("Code","Name","CategoryId","DefaultUomId") VALUES ('ITM-004','Jasa Servis AC Central Tahunan',$1,$2)
+      `INSERT INTO mst_item ("Code","Name","ItemType","CategoryId","UomId") VALUES ('ITM-004','Jasa Servis AC Central Tahunan','SERVICE',$1,$2)
        ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [catService, uomPcs]
     )).rows[0].Id
 
-    // COA & Banks
+    // COA, Bank & Transaction Type (use existing seeded ones if present)
     const coaBank = (await c.query(
-      `INSERT INTO mst_coa ("AccountCode","AccountName","AccountType") VALUES ('1101','Kas & Bank Operasional','ASSET')
-       ON CONFLICT ("AccountCode") DO UPDATE SET "AccountName"=EXCLUDED."AccountName" RETURNING "Id"`
-    )).rows[0].Id
-    const coaAp = (await c.query(
-      `INSERT INTO mst_coa ("AccountCode","AccountName","AccountType") VALUES ('2101','Hutang Usaha AP Supplier','LIABILITY')
+      `INSERT INTO mst_coa ("AccountCode","AccountName","AccountType") VALUES ('110100','Kas & Bank Operasional IDR','ASSET')
        ON CONFLICT ("AccountCode") DO UPDATE SET "AccountName"=EXCLUDED."AccountName" RETURNING "Id"`
     )).rows[0].Id
     const coaExp = (await c.query(
-      `INSERT INTO mst_coa ("AccountCode","AccountName","AccountType") VALUES ('5101','Beban Pengadaan Barang & Operasional','EXPENSE')
+      `INSERT INTO mst_coa ("AccountCode","AccountName","AccountType") VALUES ('610100','Biaya Perjalanan Dinas & Transportasi','EXPENSE')
        ON CONFLICT ("AccountCode") DO UPDATE SET "AccountName"=EXCLUDED."AccountName" RETURNING "Id"`
     )).rows[0].Id
 
     const bankAcc = (await c.query(
       `INSERT INTO mst_company_bank_account ("Code","AccountKind","AccountNo","AccountName","CurrencyCode","CoaId","IsActive")
-       VALUES ('BCA-01','OPERATIONAL','123-456-7890','BCA Operasional Perusahaan','IDR',$1,true)
+       VALUES ('BCA-IDR','BANK','012-3009988-11','Bank Central Asia Giro Corporate (IDR)','IDR',$1,true)
        ON CONFLICT ("Code") DO UPDATE SET "AccountNo"=EXCLUDED."AccountNo" RETURNING "Id"`,
       [coaBank]
     )).rows[0].Id
 
     const ttTravel = (await c.query(
       `INSERT INTO mst_transaction_type ("Module","Code","Name","RequiresSettlement","ControlCoaId","IsActive")
-       VALUES ('CA','CA_TRAVEL','Perjalanan Dinas & Luar Kota',true,$1,true)
-       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
+       VALUES ('CA','CA_TRV','Cash Advance Perjalanan Dinas',true,$1,true)
+       ON CONFLICT ("Module","Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
       [coaExp]
     )).rows[0].Id
 
@@ -271,19 +279,6 @@ async function run() {
       [tmplPr, approverId]
     )
 
-    const tmplPo = (await c.query(
-      `INSERT INTO mst_approval_template ("Code","Name","DocType","Priority","EffectiveFrom","IsActive","CreatedBy")
-       VALUES ('TMPL_PO','Template Approval PO Standar','PO',1,'2025-01-01',true,$1)
-       ON CONFLICT ("Code") DO UPDATE SET "Name"=EXCLUDED."Name" RETURNING "Id"`,
-      [adminId]
-    )).rows[0].Id
-    await c.query(`DELETE FROM mst_approval_template_step WHERE "TemplateId"=$1`, [tmplPo])
-    await c.query(
-      `INSERT INTO mst_approval_template_step ("TemplateId","StepNo","Name","ApproverType","ApproverUserId","RequiredApprovals")
-       VALUES ($1, 1, 'Otorisasi PO oleh Department Head', 'USER', $2, 1)`,
-      [tmplPo, approverId]
-    )
-
     const tmplInv = (await c.query(
       `INSERT INTO mst_approval_template ("Code","Name","DocType","Priority","EffectiveFrom","IsActive","CreatedBy")
        VALUES ('TMPL_INV','Template Approval Invoice AP','INV',1,'2025-01-01',true,$1)
@@ -293,11 +288,11 @@ async function run() {
     await c.query(`DELETE FROM mst_approval_template_step WHERE "TemplateId"=$1`, [tmplInv])
     await c.query(
       `INSERT INTO mst_approval_template_step ("TemplateId","StepNo","Name","ApproverType","ApproverUserId","RequiredApprovals")
-       VALUES ($1, 1, 'Verifikasi Invoice oleh Finance Lead', 'USER', $2, 1)`,
+       VALUES ($1, 1, 'Verifikasi Invoice oleh Approver', 'USER', $2, 1)`,
       [tmplInv, approverId]
     )
 
-    // 6. Helper for inserting documents
+    // 6. Transactions
     console.log('6. Seeding transactions across all demo roles...')
 
     async function createDoc(params: {
@@ -372,13 +367,11 @@ async function run() {
        VALUES ($1, 1, $2, 'Laptop Lenovo ThinkPad T14 Gen 4', $3, $4, 2, 19000000, '2026-12-05')`,
       [pr2Id, itmLaptop, catOffice, uomUnit]
     )
-    // Create Open Approval Request & Task for Siti Approver!
     await c.query(`DELETE FROM tr_approval_request WHERE "DocumentId"=$1`, [pr2Id])
     const reqPr2 = (await c.query(
       `INSERT INTO tr_approval_request ("DocumentId","TemplateId","RoundNo","Status") VALUES ($1,$2,1,'PENDING') RETURNING "Id"`,
       [pr2Id, tmplPr]
     )).rows[0].Id
-    await c.query(`DELETE FROM tr_approval_task WHERE "ApprovalRequestId"=$1`, [reqPr2])
     await c.query(
       `INSERT INTO tr_approval_task ("ApprovalRequestId","StepNo","AssigneeUserId","Status","ReceivedAt")
        VALUES ($1, 1, $2, 'PENDING', now())`,
@@ -429,11 +422,12 @@ async function run() {
       [rfq1Id]
     )
     await c.query(`DELETE FROM tr_rfq_line WHERE "RfqId"=$1`, [rfq1Id])
-    await c.query(
+    const rfq1LineId = (await c.query(
       `INSERT INTO tr_rfq_line ("RfqId","LineNum","ItemId","Description","CategoryId","UomId","Quantity","Specification")
-       VALUES ($1, 1, $2, 'Laptop Lenovo ThinkPad T14 Gen 4', $3, $4, 5, 'Intel i7 Gen 13, RAM 32GB, SSD 1TB NVMe')`,
+       VALUES ($1, 1, $2, 'Laptop Lenovo ThinkPad T14 Gen 4', $3, $4, 5, 'Intel i7 Gen 13, RAM 32GB, SSD 1TB NVMe')
+       RETURNING "Id"`,
       [rfq1Id, itmLaptop, catOffice, uomUnit]
-    )
+    )).rows[0].Id
     await c.query(`DELETE FROM tr_rfq_participant WHERE "RfqId"=$1`, [rfq1Id])
     const part1Id = (await c.query(
       `INSERT INTO tr_rfq_participant ("RfqId","BpId","InvitedBy") VALUES ($1,$2,$3) RETURNING "Id"`,
@@ -464,9 +458,9 @@ async function run() {
     )
     await c.query(`DELETE FROM tr_quotation_line WHERE "QuotationId"=$1`, [quo1Id])
     await c.query(
-      `INSERT INTO tr_quotation_line ("QuotationId","LineNum","Quantity","UnitPrice","DiscountPercent","LineTotal")
-       VALUES ($1, 1, 5, 24000000, 0, 120000000)`,
-      [quo1Id]
+      `INSERT INTO tr_quotation_line ("QuotationId","RfqLineId","Quantity","UnitPrice","DiscountPercent","LineAmount")
+       VALUES ($1, $2, 5, 24000000, 0, 120000000)`,
+      [quo1Id, rfq1LineId]
     )
 
     // --- TRANSACTION 6: QUO-2026-0002 (DRAFT by CV Mitra Jaya) ---
@@ -489,9 +483,9 @@ async function run() {
     )
     await c.query(`DELETE FROM tr_quotation_line WHERE "QuotationId"=$1`, [quo2Id])
     await c.query(
-      `INSERT INTO tr_quotation_line ("QuotationId","LineNum","Quantity","UnitPrice","DiscountPercent","LineTotal")
-       VALUES ($1, 1, 2, 16000000, 0, 32000000)`,
-      [quo2Id]
+      `INSERT INTO tr_quotation_line ("QuotationId","RfqLineId","Quantity","UnitPrice","DiscountPercent","LineAmount")
+       VALUES ($1, $2, 2, 16000000, 0, 32000000)`,
+      [quo2Id, rfq1LineId]
     )
 
     // --- TRANSACTION 7: CTR-2026-0001 (Contract APPROVED with PT Sumber Makmur) ---
@@ -509,17 +503,17 @@ async function run() {
     await c.query(`DELETE FROM tr_purchase_contract WHERE "DocumentId"=$1`, [ctr1Id])
     await c.query(
       `INSERT INTO tr_purchase_contract ("DocumentId","AgreementType","StartDate","EndDate","TargetAmount","PurchaseClassId","PaymentTermId","BpReference","Terms")
-       VALUES ($1,'BLANKET','2026-01-01','2026-12-31',500000000,$2,$3,'CTR-REF-SM-001','Pengiriman bertahap sesuai PO rilis tiap bulan.')`,
+       VALUES ($1,'AMOUNT','2026-01-01','2026-12-31',500000000,$2,$3,'CTR-REF-SM-001','Pengiriman bertahap sesuai PO rilis tiap bulan.')`,
       [ctr1Id, pcRaw, pt30]
     )
     await c.query(`DELETE FROM tr_purchase_contract_line WHERE "ContractId"=$1`, [ctr1Id])
     await c.query(
-      `INSERT INTO tr_purchase_contract_line ("ContractId","LineNum","ItemId","Description","UomId","TargetQuantity","UnitPrice","TargetAmount")
-       VALUES ($1, 1, $2, 'Bahan Kimia Resin Grade A Industrial', $3, 5000, 100000, 500000000)`,
-      [ctr1Id, itmResin, uomKg]
+      `INSERT INTO tr_purchase_contract_line ("ContractId","LineNum","ItemId","CategoryId","Description","UomId","TargetQty","UnitPrice")
+       VALUES ($1, 1, $2, $3, 'Bahan Kimia Resin Grade A Industrial', $4, 5000, 100000)`,
+      [ctr1Id, itmResin, catRaw, uomKg]
     )
 
-    // --- TRANSACTION 8: PO-2026-0001 (ISSUED to PT Sumber Makmur - Ready to Acknowledge in Portal) ---
+    // --- TRANSACTION 8: PO-2026-0001 (ISSUED to PT Sumber Makmur - Ready to Acknowledge) ---
     const po1Id = await createDoc({
       docType: 'PO',
       docNo: 'PO-2026-0001',
@@ -538,12 +532,11 @@ async function run() {
       [po1Id, pcRaw, pt30]
     )
     await c.query(`DELETE FROM tr_purchase_order_line WHERE "PurchaseOrderId"=$1`, [po1Id])
-    const po1LineId = (await c.query(
-      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineTotal")
-       VALUES ($1, 1, $2, 'Bahan Kimia Resin Grade A Industrial', $3, 1250, 100000, 125000000)
-       RETURNING "Id"`,
+    await c.query(
+      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineAmount")
+       VALUES ($1, 1, $2, 'Bahan Kimia Resin Grade A Industrial', $3, 1250, 100000, 125000000)`,
       [po1Id, itmResin, uomKg]
-    )).rows[0].Id
+    )
 
     // --- TRANSACTION 9: PO-2026-0002 (ACKNOWLEDGED by PT Sumber Makmur) ---
     const po2Id = await createDoc({
@@ -565,7 +558,7 @@ async function run() {
     )
     await c.query(`DELETE FROM tr_purchase_order_line WHERE "PurchaseOrderId"=$1`, [po2Id])
     const po2LineId = (await c.query(
-      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineTotal")
+      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineAmount")
        VALUES ($1, 1, $2, 'Kertas HVS A4 80gr Sinar Dunia', $3, 50, 370000, 18500000)
        RETURNING "Id"`,
       [po2Id, itmPaper, uomBox]
@@ -586,12 +579,12 @@ async function run() {
     await c.query(`DELETE FROM tr_purchase_order WHERE "DocumentId"=$1`, [po3Id])
     await c.query(
       `INSERT INTO tr_purchase_order ("DocumentId","PurchaseClassId","PaymentTermId","PoType","BpReference","ShippingMethod","DeliveryDate","SubtotalAmount","GrandTotal","IssuedAt")
-       VALUES ($1,$2,$3,'STANDARD','PO-REF-2026-03','DIRECT_SERVICE','2026-12-01',15000000,15000000,now() - interval '1 days')`,
+       VALUES ($1,$2,$3,'SERVICE','PO-REF-2026-03','DIRECT_SERVICE','2026-12-01',15000000,15000000,now() - interval '1 days')`,
       [po3Id, pcGeneral, pt14]
     )
     await c.query(`DELETE FROM tr_purchase_order_line WHERE "PurchaseOrderId"=$1`, [po3Id])
     await c.query(
-      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineTotal")
+      `INSERT INTO tr_purchase_order_line ("PurchaseOrderId","LineNum","ItemId","Description","UomId","Quantity","UnitPrice","LineAmount")
        VALUES ($1, 1, $2, 'Jasa Servis AC Central Tahunan', $3, 1, 15000000, 15000000)`,
       [po3Id, itmAc, uomPcs]
     )
@@ -616,7 +609,7 @@ async function run() {
     )
     await c.query(`DELETE FROM tr_goods_receipt_line WHERE "GoodsReceiptId"=$1`, [gr1Id])
     await c.query(
-      `INSERT INTO tr_goods_receipt_line ("GoodsReceiptId","LineNum","PurchaseOrderLineId","QuantityReceived","QuantityAccepted","QuantityRejected")
+      `INSERT INTO tr_goods_receipt_line ("GoodsReceiptId","LineNum","PurchaseOrderLineId","ReceivedQty","AcceptedQty","RejectedQty")
        VALUES ($1, 1, $2, 50, 50, 0)`,
       [gr1Id, po2LineId]
     )
@@ -635,7 +628,7 @@ async function run() {
     })
     await c.query(`DELETE FROM tr_ap_invoice WHERE "DocumentId"=$1`, [inv1Id])
     await c.query(
-      `INSERT INTO tr_ap_invoice ("DocumentId","InvoiceKind","BpId","PurchaseOrderId","BpInvoiceNo","InvoiceDate","DueDate","TransactionAmount","TaxBaseAmount","GrandTotal")
+      `INSERT INTO tr_ap_invoice ("DocumentId","InvoiceKind","BpId","PurchaseOrderId","BpInvoiceNo","InvoiceDate","DueDate","TransactionAmount","TaxBaseAmount","NetPayable")
        VALUES ($1,'INVOICE',$2,$3,'INV-SM-2026-001','2026-11-23','2026-12-23',125000000,125000000,125000000)`,
       [inv1Id, bp1, po1Id]
     )
@@ -645,13 +638,11 @@ async function run() {
        VALUES ($1, 1, 'Bahan Kimia Resin Grade A Industrial', 1250, 100000, 125000000)`,
       [inv1Id]
     )
-    // Open Approval Round for INV-2026-0001
     await c.query(`DELETE FROM tr_approval_request WHERE "DocumentId"=$1`, [inv1Id])
     const reqInv1 = (await c.query(
       `INSERT INTO tr_approval_request ("DocumentId","TemplateId","RoundNo","Status") VALUES ($1,$2,1,'PENDING') RETURNING "Id"`,
       [inv1Id, tmplInv]
     )).rows[0].Id
-    await c.query(`DELETE FROM tr_approval_task WHERE "ApprovalRequestId"=$1`, [reqInv1])
     await c.query(
       `INSERT INTO tr_approval_task ("ApprovalRequestId","StepNo","AssigneeUserId","Status","ReceivedAt")
        VALUES ($1, 1, $2, 'PENDING', now())`,
@@ -672,7 +663,7 @@ async function run() {
     })
     await c.query(`DELETE FROM tr_ap_invoice WHERE "DocumentId"=$1`, [inv2Id])
     await c.query(
-      `INSERT INTO tr_ap_invoice ("DocumentId","InvoiceKind","BpId","PurchaseOrderId","BpInvoiceNo","InvoiceDate","DueDate","TransactionAmount","TaxBaseAmount","GrandTotal")
+      `INSERT INTO tr_ap_invoice ("DocumentId","InvoiceKind","BpId","PurchaseOrderId","BpInvoiceNo","InvoiceDate","DueDate","TransactionAmount","TaxBaseAmount","NetPayable")
        VALUES ($1,'INVOICE',$2,$3,'INV-SM-2026-002','2026-11-21','2026-12-05',18500000,18500000,18500000)`,
       [inv2Id, bp1, po2Id]
     )
@@ -698,7 +689,7 @@ async function run() {
     await c.query(`DELETE FROM tr_payment WHERE "DocumentId"=$1`, [pay1Id])
     await c.query(
       `INSERT INTO tr_payment ("DocumentId","Purpose","PayeeType","CompanyBankAccountId","PaymentMethod","PaidDate","BankBatchNo","BankReference")
-       VALUES ($1,'AP','BP',$2,'TRANSFER','2026-11-22','BATCH-20261122-01','TRF-BCA-881920')`,
+       VALUES ($1,'AP_INVOICE','BP',$2,'TRANSFER','2026-11-22','BATCH-20261122-01','TRF-BCA-881920')`,
       [pay1Id, bankAcc]
     )
     await c.query(`DELETE FROM tr_payment_allocation WHERE "PaymentId"=$1`, [pay1Id])
@@ -733,7 +724,7 @@ async function run() {
       [ca1Id, coaExp, ccProc]
     )
 
-    // 7. Notifications for Each Demo Account
+    // 7. Notifications
     console.log('7. Creating interactive notifications for all demo personas...')
     await c.query(
       `DELETE FROM tr_notification WHERE "RecipientUserId" IN ($1,$2,$3,$4,$5,$6)`,
@@ -741,108 +732,19 @@ async function run() {
     )
 
     const notifs = [
-      // Siti Approver
-      {
-        uid: approverId,
-        docId: pr2Id,
-        type: 'APPROVAL_REQUESTED',
-        title: 'Tugas Approval Baru: PR-2026-0002',
-        body: 'Dokumen PR-2026-0002 (Pengadaan Laptop Engineer Baru - Rp 38.000.000) membutuhkan persetujuan Anda.',
-      },
-      {
-        uid: approverId,
-        docId: inv1Id,
-        type: 'APPROVAL_REQUESTED',
-        title: 'Tugas Approval Baru: INV-2026-0001',
-        body: 'Dokumen INV-2026-0001 (Tagihan Material Resin - Rp 125.000.000) diajukan oleh PT Sumber Makmur.',
-      },
-
-      // Budi Buyer
-      {
-        uid: buyerId,
-        docId: pr1Id,
-        type: 'APPROVAL_COMPLETED',
-        title: 'Persetujuan Selesai: PR-2026-0001',
-        body: 'Purchase Request PR-2026-0001 telah disetujui penuh oleh Department Head.',
-      },
-      {
-        uid: buyerId,
-        docId: quo1Id,
-        type: 'QUOTATION_SUBMITTED',
-        title: 'Penawaran Masuk: QUO-2026-0001',
-        body: 'PT Sumber Makmur Sentosa telah mengirimkan penawaran harga untuk tender RFQ-2026-0001.',
-      },
-      {
-        uid: buyerId,
-        docId: po2Id,
-        type: 'PO_ACKNOWLEDGED',
-        title: 'PO Dikonfirmasi Rekanan: PO-2026-0002',
-        body: 'PT Sumber Makmur Sentosa telah melakukan konfirmasi kesanggupan pengiriman untuk PO-2026-0002.',
-      },
-
-      // Fajar Finance
-      {
-        uid: financeId,
-        docId: inv1Id,
-        type: 'INVOICE_SUBMITTED',
-        title: 'Invoice Tagihan Masuk: INV-2026-0001',
-        body: 'Tagihan vendor INV-2026-0001 senilai Rp 125.000.000 siap untuk proses verifikasi finance.',
-      },
-      {
-        uid: financeId,
-        docId: ca1Id,
-        type: 'CA_DISBURSED',
-        title: 'Disbursement Selesai: CA-2026-0001',
-        body: 'Pencairan kasbon perjalanan dinas Budi Buyer sebesar Rp 7.500.000 telah berhasil dibukukan.',
-      },
-
-      // PT Sumber Makmur (Vendor)
-      {
-        uid: vendorUserId,
-        docId: po1Id,
-        type: 'PO_ISSUED',
-        title: 'Pesanan Baru (PO Diterbitkan): PO-2026-0001',
-        body: 'Perusahaan telah menerbitkan PO-2026-0001 (Rp 125.000.000). Silakan lakukan konfirmasi di portal PO.',
-      },
-      {
-        uid: vendorUserId,
-        docId: rfq1Id,
-        type: 'RFQ_INVITATION',
-        title: 'Undangan Tender Pengadaan: RFQ-2026-0001',
-        body: 'Anda diundang untuk mengajukan penawaran harga pada Tender Perangkat IT & Printer.',
-      },
-      {
-        uid: vendorUserId,
-        docId: pay1Id,
-        type: 'PAYMENT_RECEIVED',
-        title: 'Pembayaran Diterima: Pelunasan INV-2026-0002',
-        body: 'Pembayaran sebesar Rp 18.500.000 untuk tagihan ATK kertas kantor telah ditransfer ke rekening Anda.',
-      },
-
-      // CV Mitra Jaya (Vendor)
-      {
-        uid: mitraUserId,
-        docId: po3Id,
-        type: 'PO_ISSUED',
-        title: 'Pesanan Baru (PO Diterbitkan): PO-2026-0003',
-        body: 'PO-2026-0003 senilai Rp 15.000.000 untuk Jasa Pemeliharaan AC Central telah diterbitkan.',
-      },
-      {
-        uid: mitraUserId,
-        docId: rfq1Id,
-        type: 'RFQ_INVITATION',
-        title: 'Undangan Tender Pengadaan: RFQ-2026-0001',
-        body: 'Anda diundang untuk berpartisipasi dalam RFQ-2026-0001 Tender Perangkat IT & Printer.',
-      },
-
-      // Administrator
-      {
-        uid: adminId,
-        docId: pr2Id,
-        type: 'SYSTEM_EVENT',
-        title: 'Audit Trail: Aktivitas Transaksi Baru',
-        body: '15 dokumen transaksi operasional purchasing dan portal vendor aktif dalam sistem.',
-      },
+      { uid: approverId, docId: pr2Id, type: 'APPROVAL_REQUESTED', title: 'Tugas Approval Baru: PR-2026-0002', body: 'Dokumen PR-2026-0002 (Pengadaan Laptop Engineer Baru - Rp 38.000.000) membutuhkan persetujuan Anda.' },
+      { uid: approverId, docId: inv1Id, type: 'APPROVAL_REQUESTED', title: 'Tugas Approval Baru: INV-2026-0001', body: 'Dokumen INV-2026-0001 (Tagihan Material Resin - Rp 125.000.000) diajukan oleh PT Sumber Makmur.' },
+      { uid: buyerId, docId: pr1Id, type: 'APPROVAL_COMPLETED', title: 'Persetujuan Selesai: PR-2026-0001', body: 'Purchase Request PR-2026-0001 telah disetujui penuh oleh Department Head.' },
+      { uid: buyerId, docId: quo1Id, type: 'QUOTATION_SUBMITTED', title: 'Penawaran Masuk: QUO-2026-0001', body: 'PT Sumber Makmur Sentosa telah mengirimkan penawaran harga untuk tender RFQ-2026-0001.' },
+      { uid: buyerId, docId: po2Id, type: 'PO_ACKNOWLEDGED', title: 'PO Dikonfirmasi Rekanan: PO-2026-0002', body: 'PT Sumber Makmur Sentosa telah melakukan konfirmasi kesanggupan pengiriman untuk PO-2026-0002.' },
+      { uid: financeId, docId: inv1Id, type: 'INVOICE_SUBMITTED', title: 'Invoice Tagihan Masuk: INV-2026-0001', body: 'Tagihan vendor INV-2026-0001 senilai Rp 125.000.000 siap untuk proses verifikasi finance.' },
+      { uid: financeId, docId: ca1Id, type: 'CA_DISBURSED', title: 'Disbursement Selesai: CA-2026-0001', body: 'Pencairan kasbon perjalanan dinas Budi Buyer sebesar Rp 7.500.000 telah berhasil dibukukan.' },
+      { uid: vendorUserId, docId: po1Id, type: 'PO_ISSUED', title: 'Pesanan Baru (PO Diterbitkan): PO-2026-0001', body: 'Perusahaan telah menerbitkan PO-2026-0001 (Rp 125.000.000). Silakan lakukan konfirmasi di portal PO.' },
+      { uid: vendorUserId, docId: rfq1Id, type: 'RFQ_INVITATION', title: 'Undangan Tender Pengadaan: RFQ-2026-0001', body: 'Anda diundang untuk mengajukan penawaran harga pada Tender Perangkat IT & Printer.' },
+      { uid: vendorUserId, docId: pay1Id, type: 'PAYMENT_RECEIVED', title: 'Pembayaran Diterima: Pelunasan INV-2026-0002', body: 'Pembayaran sebesar Rp 18.500.000 untuk tagihan ATK kertas kantor telah ditransfer ke rekening Anda.' },
+      { uid: mitraUserId, docId: po3Id, type: 'PO_ISSUED', title: 'Pesanan Baru (PO Diterbitkan): PO-2026-0003', body: 'PO-2026-0003 senilai Rp 15.000.000 untuk Jasa Pemeliharaan AC Central telah diterbitkan.' },
+      { uid: mitraUserId, docId: rfq1Id, type: 'RFQ_INVITATION', title: 'Undangan Tender Pengadaan: RFQ-2026-0001', body: 'Anda diundang untuk berpartisipasi dalam RFQ-2026-0001 Tender Perangkat IT & Printer.' },
+      { uid: adminId, docId: pr2Id, type: 'SYSTEM_EVENT', title: 'Audit Trail: Aktivitas Transaksi Baru', body: '15 dokumen transaksi operasional purchasing dan portal vendor aktif dalam sistem.' },
     ]
 
     for (const n of notifs) {
@@ -855,7 +757,7 @@ async function run() {
 
     await c.query('COMMIT')
     console.log('\n======================================================')
-    console.log('🎉 SUCCESS: All demo users & 15 transactions seeded!')
+    console.log('SUCCESS: All demo users & 15 transactions seeded!')
     console.log('Internal Accounts: admin, buyer, approver, finance')
     console.log('Vendor Accounts: vendor (PT Sumber Makmur), mitra (CV Mitra Jaya)')
     console.log('Password for all accounts:', DEMO_PW)
