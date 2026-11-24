@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { hashPassword } from '../password-reset/password-reset.service'
 import type { Db } from '../../core/db'
 import type { Actor } from '../../core/types'
 import { HttpError, notFound } from '../../core/errors'
@@ -22,7 +23,7 @@ export class ProfileService {
     if (!hash) throw new HttpError(422, 'SSO_ACCOUNT', 'This account signs in with Microsoft; change the password there')
     if (!(await bcrypt.compare(d.currentPassword, hash))) throw new HttpError(422, 'WRONG_PASSWORD', 'Current password is incorrect')
     if (d.currentPassword === d.newPassword) throw new HttpError(422, 'SAME_PASSWORD', 'New password must differ from the current one')
-    const next = await bcrypt.hash(d.newPassword, 12)
+    const next = await hashPassword(d.newPassword)
     await this.run(async (r) => {
       await r.setPassword(this.actor.id, next)
       await r.endOtherSessions(this.actor.id, this.actor.sessionId)

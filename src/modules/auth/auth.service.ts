@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs'
+import { BCRYPT_COST } from '../password-reset/password-reset.service'
 import type { Db } from '../../core/db'
 import { HttpError, unauthorized } from '../../core/errors'
 import { AuthRepository } from './auth.repository'
@@ -10,7 +11,7 @@ const MAX_FAILS = 5
 const MAX_LOCK_CYCLES = 5
 // Real hash (made once per isolate) so unknown e-mails cost the same as wrong passwords: no user enumeration by timing.
 let dummy: string | undefined
-const DUMMY_HASH = () => (dummy ??= bcrypt.hashSync('dummy-password', 12))
+const DUMMY_HASH = () => (dummy ??= bcrypt.hashSync('dummy-password', BCRYPT_COST))
 
 const GENERIC = () => unauthorized('Invalid email or password')
 const addSec = (s: number) => new Date(Date.now() + s * 1000)

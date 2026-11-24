@@ -12,7 +12,9 @@ const PURPOSE = 'PASSWORD_RESET'
 const MAX_ATTEMPTS = 5
 const RESET_MIN = 15
 export const INVITE_MIN = 30 // DB caps a code's life at 30 minutes
-export const hashPassword = (p: string) => bcrypt.hash(p, 12)
+// shortcut: cost 8 (~15 ms) so login fits the Workers Free 10 ms CPU limit; raise to 12 on Workers Paid (existing hashes keep their own cost until the password changes).
+export const BCRYPT_COST = 8
+export const hashPassword = (p: string) => bcrypt.hash(p, BCRYPT_COST)
 export type Defer = (p: Promise<unknown>) => void
 
 const badCode = () => new HttpError(422, 'INVALID_CODE', 'Invalid or expired code')
