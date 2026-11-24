@@ -2,9 +2,9 @@
 
 Scope: **Purchasing + vendor portal** (identity, purchasing masters, approval, Business Partner + vendor registration/verification, PR → RFQ/Quotation → Contract → PO → GR/return, budget). Out of scope: AP invoice, payment, cash advance/settlement/reimbursement, AR, journal.
 Parity references: `OLD/00. EXP_V1` (internal purchasing) and `OLD/00. Supplier Portal` (vendor side).
-Stack, all free tier: **Neon Postgres** · **Hono API** (repo `04.-Purchasing_BE`, Vercel or Cloudflare Workers) · **Next.js 16** (repo `04.-Purchasing_FE`, Vercel; proxies `/api/*` to the BE) · Prisma only for schema/migrations.
+Stack, all free tier: **Neon Postgres** · **Hono API** (repo `01.-Purchasing_BE`, Vercel or Cloudflare Workers) · **Next.js 16** (repo `01.-Purchasing_FE`, Vercel; proxies `/api/*` to the BE) · Prisma only for schema/migrations.
 
-Two separate git repos under `/home/jidan/Documents/00. IDS_DEV/02. KPIN/`: **BE** = `04.-Purchasing_BE/`, **FE** = `04.-Purchasing_FE/`. Paths below say `BE/…` or `FE/…`.
+Two separate git repos under `/home/jidan/Documents/00. IDS_DEV/02. KPIN/`: **BE** = `01.-Purchasing_BE/`, **FE** = `01.-Purchasing_FE/`. Paths below say `BE/…` or `FE/…`.
 
 ## Source of truth
 - Business design: `../02. KPIN_DB_REDESIGN/01_architecture.md`, `02_data_dictionary.md`, `prisma/sql/*.sql` (SQL Server originals).

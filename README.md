@@ -1,6 +1,6 @@
-# 04.-Purchasing_BE
+# 01.-Purchasing_BE
 
-Backend **Purchasing Portal + Vendor Portal** — Hono + Postgres (Neon). Pasangan FE: `04.-Purchasing_FE`.
+Backend **Purchasing Portal + Vendor Portal** — Hono + Postgres (Neon). Pasangan FE: `01.-Purchasing_FE`.
 Desain database: `../02. KPIN_DB_REDESIGN`. Aturan kode wajib: **CONVENTIONS.md**.
 
 ## Scope
