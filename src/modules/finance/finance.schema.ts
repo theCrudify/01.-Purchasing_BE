@@ -297,6 +297,32 @@ export const payCreate = z
   })
   .strict()
 
+export const payMufgAction = z
+  .object({
+    mode: z.enum(['AUTO', 'SEND', 'COMPLETE', 'FAIL']).default('AUTO'),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict()
+
+export const payInstallments = z
+  .object({
+    targetDocId: z.string().uuid(),
+    companyBankAccountId: z.coerce.number().int().positive(),
+    paymentMethod: z.enum(['TRANSFER', 'CASH', 'GIRO']).default('TRANSFER'),
+    autoPayFirst: z.boolean().default(false),
+    schedule: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1).max(100),
+          percent: z.coerce.number().positive().max(100),
+          plannedDate: isoDate,
+        })
+      )
+      .min(1)
+      .max(12),
+  })
+  .strict()
+
 // 6. AR Invoice (ARI)
 export const ariList: ListConfig = {
   table: 'vw_doc_ari',
@@ -371,4 +397,6 @@ export type StlCreate = z.infer<typeof stlCreate>
 export type RmbCreate = z.infer<typeof rmbCreate>
 export type InvCreate = z.infer<typeof invCreate>
 export type PayCreate = z.infer<typeof payCreate>
+export type PayMufgAction = z.infer<typeof payMufgAction>
+export type PayInstallments = z.infer<typeof payInstallments>
 export type AriCreate = z.infer<typeof ariCreate>

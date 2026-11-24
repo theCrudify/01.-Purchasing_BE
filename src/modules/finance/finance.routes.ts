@@ -3,7 +3,7 @@ import type { AppEnv } from '../../env'
 import { validate } from '../../core/validate'
 import { requireAuth, requireUserType } from '../../middleware/auth'
 import { financeController as ctl } from './finance.controller'
-import { ariCreate, caCreate, finIdParam, finListQuery, invCreate, payCreate, rmbCreate, stlCreate } from './finance.schema'
+import { ariCreate, caCreate, finIdParam, finListQuery, invCreate, payCreate, payInstallments, payMufgAction, rmbCreate, stlCreate } from './finance.schema'
 
 const idP = validate('param', finIdParam)
 const listQ = validate('query', finListQuery)
@@ -60,8 +60,10 @@ export const payRoutes = new Hono<AppEnv>()
   .use(requireAuth)
   .get('/', listQ, (c) => ctl.listPay(c, c.req.valid('query')))
   .post('/', requireUserType('INTERNAL'), validate('json', payCreate), (c) => ctl.createPay(c, c.req.valid('json')))
+  .post('/installments', requireUserType('INTERNAL'), validate('json', payInstallments), (c) => ctl.createInstallments(c, c.req.valid('json')))
   .patch('/:id', requireUserType('INTERNAL'), idP, validate('json', payCreate), (c) => ctl.updatePay(c, c.req.valid('param').id, c.req.valid('json')))
   .post('/:id/submit', requireUserType('INTERNAL'), idP, (c) => ctl.submit(c, c.req.valid('param').id))
+  .post('/:id/mufg', requireUserType('INTERNAL'), idP, validate('json', payMufgAction), (c) => ctl.mufgAction(c, c.req.valid('param').id, c.req.valid('json')))
 
 export const ariRoutes = new Hono<AppEnv>()
   .use(requireAuth)

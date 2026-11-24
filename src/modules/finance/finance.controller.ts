@@ -34,6 +34,8 @@ export const financeController = {
   listPay: async (c: C, qs: any) => c.json(await svc(c).listPay(qs)),
   createPay: async (c: C, body: any) => c.json({ data: await svc(c).createPay(body) }, 201),
   updatePay: async (c: C, id: string, body: any) => c.json({ data: await svc(c).updatePay(id, body) }),
+  mufgAction: async (c: C, id: string, body: any) => c.json({ data: await svc(c).mufgAction(id, body) }),
+  createInstallments: async (c: C, body: any) => c.json({ data: await svc(c).createInstallments(body) }, 201),
 
   listAri: async (c: C, qs: any) => c.json(await svc(c).listAri(qs)),
   ariLines: async (c: C, id: string) => c.json({ data: await svc(c).ariLines(id) }),
