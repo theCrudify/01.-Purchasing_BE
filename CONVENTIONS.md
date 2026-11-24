@@ -7,7 +7,7 @@ Stack, all free tier: **Neon Postgres** · **Hono API** (repo `01.-Purchasing_BE
 Two separate git repos under `/home/jidan/Documents/00. IDS_DEV/02. KPIN/`: **BE** = `01.-Purchasing_BE/`, **FE** = `01.-Purchasing_FE/`. Paths below say `BE/…` or `FE/…`.
 
 ## Source of truth
-- Business design: `../02. KPIN_DB_REDESIGN/01_architecture.md`, `02_data_dictionary.md`, `prisma/sql/*.sql` (SQL Server originals).
+- Business design: `../02. DB_REDESIGN/01_architecture.md`, `02_data_dictionary.md`, `prisma/sql/*.sql` (SQL Server originals).
 - Postgres schema: `BE/db/prisma/schema.prisma` → `BE/db/migrations/0001_init.generated.sql` (generated, never edit).
   Tables are snake_case (`@@map`), **columns are PascalCase and must be double-quoted in SQL** (`"Id"`, `"PublicId"`).
   int8 ids come back as JS numbers; `numeric` money comes back as **string** (never do float math on money in JS; let SQL compute or use string decimals).

@@ -1,7 +1,7 @@
 # 01.-Purchasing_BE
 
 Backend **Purchasing Portal + Vendor Portal** — Hono + Postgres (Neon). Pasangan FE: `01.-Purchasing_FE`.
-Desain database: `../02. KPIN_DB_REDESIGN`. Aturan kode wajib: **CONVENTIONS.md**.
+Desain database: `../02. DB_REDESIGN`. Aturan kode wajib: **CONVENTIONS.md**.
 
 ## Scope
 Login & akses (user, role, permission, karyawan, SSO Entra opsional) · master purchasing (departemen, mata uang & kurs, pajak, termin, UoM, kategori, purchase class, item, bank, budget, penomoran) · approval engine · Business Partner + registrasi & verifikasi vendor (portal) · PR → RFQ/Quotation → Kontrak → PO → GR/retur.

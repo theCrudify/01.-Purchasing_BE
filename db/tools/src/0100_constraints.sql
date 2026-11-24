@@ -1,6 +1,6 @@
 /* =====================================================================
    Purchasing Portal db-port 0100 — session helpers, CHECK constraints, partial unique indexes, read views.
-   Port of KPIN_DB_REDESIGN/prisma/sql/constraints.sql (SQL Server). Idempotent.
+   Port of 02. DB_REDESIGN/prisma/sql/constraints.sql (SQL Server). Idempotent.
    Template: db/tools/src/0100_constraints.sql (bare PascalCase columns) -> db/tools/build.py.
    ===================================================================== */
 
