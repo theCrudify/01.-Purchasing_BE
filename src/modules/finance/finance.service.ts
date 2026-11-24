@@ -396,8 +396,15 @@ export class FinanceService {
               : null
       if (!purpose) throw new HttpError(422, 'RULE_VIOLATION', 'Target must be an AP Invoice, Cash Advance, or Reimbursement')
 
+      const [sumRow] = await q.query<{ applied: string }>(
+        `SELECT COALESCE(SUM(pa."AmountApplied"), 0) AS applied
+           FROM tr_payment_allocation pa
+           JOIN tr_document pd ON pd."Id" = pa."PaymentId"
+          WHERE pa."TargetDocumentId"=$1 AND NOT pd."IsDeleted" AND pd."Status" IN ('POSTED','COMPLETED')`,
+        [tgt.id]
+      )
       const total = Number(tgt.totalAmount ?? 0)
-      const applied = Number(tgt.appliedAmount ?? 0)
+      const applied = Math.max(Number(tgt.appliedAmount ?? 0), Number(sumRow?.applied ?? 0))
       const remaining = Math.max(0, total - applied)
       if (remaining <= 0) throw new HttpError(422, 'RULE_VIOLATION', 'Document is already fully paid')
 
@@ -433,8 +440,7 @@ export class FinanceService {
           remarks: stage.label,
         })
         const docNo = await assignNumber(q, this.actor, doc.id)
-        await changeStatus(q, this.actor, doc.id, 'PENDING_APPROVAL', { remarks: 'Auto-submitted from installment schedule' })
-        await changeStatus(q, this.actor, doc.id, 'APPROVED', { remarks: 'Auto-approved per agreement schedule' })
+        await changeStatus(q, this.actor, doc.id, 'APPROVED', { remarks: 'Auto-approved per agreement installment schedule' })
 
         let finalStatus = 'APPROVED'
         if (d.autoPayFirst && idx === 0) {
