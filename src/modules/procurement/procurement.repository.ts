@@ -1,5 +1,5 @@
 import type { Queryable } from '../../core/db'
-import { notFound } from '../../core/errors'
+import { conflict, forbidden, notFound } from '../../core/errors'
 import { runList, type ListConfig, type ListQuery } from '../../core/list-query'
 import {
   ctrList,
@@ -19,7 +19,8 @@ import {
 export class ProcurementRepository {
   constructor(private q: Queryable) {}
 
-  listDoc(cfg: ListConfig, qs: ListQuery & { status?: string }, bpIds?: number[]) {
+  /** bpCond: SQL condition for the BP scope; $n is the bp id array (default: the document's own BpId). */
+  listDoc(cfg: ListConfig, qs: ListQuery & { status?: string }, bpIds?: number[], bpCond = (n: number) => `"BpId" = ANY($${n}::bigint[])`) {
     const conds = [`NOT "IsDeleted"`]
     const params: unknown[] = []
     if (qs.status) {
@@ -28,7 +29,7 @@ export class ProcurementRepository {
     }
     if (bpIds) {
       params.push(bpIds)
-      conds.push(`"BpId" = ANY($${params.length}::bigint[])`)
+      conds.push(bpCond(params.length))
     }
     return runList(this.q, cfg, qs, { where: conds, params })
   }
@@ -46,8 +47,9 @@ export class ProcurementRepository {
     }
     return runList(this.q, prList, qs, { where: conds, params })
   }
-  listRfq(qs: ListQuery & { status?: string }) {
-    return this.listDoc(rfqList, qs)
+  listRfq(qs: ListQuery & { status?: string }, bpIds?: number[]) {
+    // BP users only see RFQs they were invited to
+    return this.listDoc(rfqList, qs, bpIds, (n) => `"Id" IN (SELECT "RfqId" FROM tr_rfq_participant WHERE "BpId" = ANY($${n}::bigint[]))`)
   }
   listQuo(qs: ListQuery & { status?: string }, bpIds?: number[]) {
     return this.listDoc(quoList, qs, bpIds)
@@ -150,7 +152,7 @@ export class ProcurementRepository {
     )
   }
 
-  async insertQuo(docId: number, bpId: number, d: QuoCreate, actorId: number) {
+  async insertQuo(docId: number, bpId: number, d: QuoCreate, actorId: number, invitedOnly = false) {
     const rfqRow = (
       await this.q.query<{ id: number }>(
         `SELECT "Id" AS id FROM tr_document WHERE "PublicId"=$1 AND "DocType"='RFQ' AND NOT "IsDeleted"`,
@@ -165,6 +167,7 @@ export class ProcurementRepository {
         [rfqRow.id, bpId]
       )
     )[0]
+    if (!part && invitedOnly) throw forbidden('Vendor is not invited to this RFQ')
     if (!part) {
       part = (
         await this.q.query<{ id: number }>(
@@ -174,6 +177,9 @@ export class ProcurementRepository {
         )
       )[0]
     }
+
+    const dup = await this.q.query(`SELECT 1 FROM tr_quotation WHERE "RfqParticipantId"=$1`, [part!.id])
+    if (dup.length) throw conflict('A quotation for this RFQ already exists for this vendor; open it from the list to edit')
 
     const rfqLines = await this.q.query<{ id: number }>(
       `SELECT "Id" AS id FROM tr_rfq_line WHERE "RfqId"=$1 ORDER BY "LineNum"`,

@@ -1,6 +1,7 @@
 import type { Db } from '../../core/db'
 import type { ListQuery } from '../../core/list-query'
 import type { Actor } from '../../core/types'
+import { HttpError, forbidden } from '../../core/errors'
 import { submitForApproval } from '../approval/approval.engine'
 import { assignNumber, changeStatus, createDraft, loadDocument } from '../document/document.core'
 import { DocumentRepository } from '../document/document.repository'
@@ -9,6 +10,19 @@ import type { CtrCreate, GrCreate, PoCreate, PrCreate, QuoCreate, RfqCreate } fr
 
 export class ProcurementService {
   constructor(private db: Db, private actor: Actor) {}
+
+  /** QUO vendor: BP users may only quote as one of their own BPs; internal users must name the vendor. */
+  private async quoBpId(q: Parameters<Parameters<Db['session']>[1]>[0], given?: string) {
+    const repo = new ProcurementRepository(q)
+    if (this.actor.userType === 'BP') {
+      const own = (await this.bpScope(q)) ?? []
+      const id = given ? await repo.resolveBpId(given) : own[0]
+      if (!id || !own.includes(id)) throw forbidden('You can only quote for your own company')
+      return id
+    }
+    if (!given) throw new HttpError(422, 'VALIDATION', 'Vendor / Business Partner is required')
+    return repo.resolveBpId(given)
+  }
 
   private async bpScope(q: Parameters<Parameters<Db['session']>[1]>[0]) {
     if (this.actor.userType !== 'BP') return undefined
@@ -19,7 +33,7 @@ export class ProcurementService {
     return this.db.session(this.actor, (q) => new ProcurementRepository(q).listPr(qs))
   }
   listRfq(qs: ListQuery & { status?: string }) {
-    return this.db.session(this.actor, (q) => new ProcurementRepository(q).listRfq(qs))
+    return this.db.session(this.actor, async (q) => new ProcurementRepository(q).listRfq(qs, await this.bpScope(q)))
   }
   listQuo(qs: ListQuery & { status?: string }) {
     return this.db.session(this.actor, async (q) => new ProcurementRepository(q).listQuo(qs, await this.bpScope(q)))
@@ -90,14 +104,14 @@ export class ProcurementService {
   createQuo(d: QuoCreate) {
     return this.db.session(this.actor, async (q) => {
       const repo = new ProcurementRepository(q)
-      const bpId = await repo.resolveBpId(d.bpId)
+      const bpId = await this.quoBpId(q, d.bpId)
       const doc = await createDraft(q, this.actor, 'QUO', {
         title: d.title,
         bpId,
         currencyCode: d.currencyCode,
         remarks: d.remarks ?? null,
       })
-      await repo.insertQuo(doc.id, bpId, d, this.actor.id)
+      await repo.insertQuo(doc.id, bpId, d, this.actor.id, this.actor.userType === 'BP')
       const docNo = await assignNumber(q, this.actor, doc.id)
       return { id: doc.publicId, docNo }
     })
@@ -182,13 +196,13 @@ export class ProcurementService {
     return this.db.session(this.actor, async (q) => {
       const curr = await loadDocument(q, this.actor, publicId, { lock: true })
       const repo = new ProcurementRepository(q)
-      const bpId = await repo.resolveBpId(d.bpId)
+      const bpId = await this.quoBpId(q, d.bpId)
       await q.query(
         `UPDATE tr_document SET "Title"=$2, "BpId"=$3, "CurrencyCode"=$4, "Remarks"=$5, "UpdatedBy"=$6, "Version"="Version"+1 WHERE "Id"=$1`,
         [curr.id, d.title, bpId, d.currencyCode, d.remarks ?? null, this.actor.id]
       )
       await repo.clearSubtypeForUpdate(curr.id, 'QUO')
-      await repo.insertQuo(curr.id, bpId, d, this.actor.id)
+      await repo.insertQuo(curr.id, bpId, d, this.actor.id, this.actor.userType === 'BP')
       return { id: curr.publicId, docNo: curr.docNo }
     })
   }
@@ -245,7 +259,7 @@ export class ProcurementService {
         return submitForApproval(q, this.actor, d.id)
       }
       // Fallback for doc types whose direct transition is SUBMITTED / PUBLISHED / RECEIVED
-      for (const target of ['SUBMITTED', 'PUBLISHED', 'RECEIVED', 'APPROVED']) {
+      for (const target of ['SUBMITTED', 'PUBLISHED', 'RECEIVED', 'POSTED', 'APPROVED']) {
         const t = await docRepo.transition(d.docType, d.status, target)
         if (t && !t.requiredApproval) {
           await changeStatus(q, this.actor, d.id, target, { remarks: 'Submitted' })

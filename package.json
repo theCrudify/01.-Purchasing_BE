@@ -12,7 +12,8 @@
     "db:validate": "prisma validate --schema db/prisma/schema.prisma",
     "db:diff": "prisma migrate diff --from-empty --to-schema-datamodel db/prisma/schema.prisma --script",
     "seed:admin": "tsx --env-file=.env scripts/seed-admin.ts",
-    "seed:demo": "tsx --env-file=.env scripts/seed-demo.ts"
+    "seed:demo": "tsx --env-file=.env scripts/seed-demo.ts",
+    "seed:flows": "tsx scripts/seed-flows.ts"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.9.1",

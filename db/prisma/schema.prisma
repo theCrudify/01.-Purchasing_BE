@@ -1193,7 +1193,7 @@ model ApprovalTemplateStep {
   StepNo            Int     @db.SmallInt
   Name              String  @db.VarChar(100) /// Checker, Acknowledger, Approver, Director, Receive…
   StepCode          String? @db.VarChar(5) /// CH | AC | AP | RE | CL — key into mst_approver_mapping
-  ApproverType      String  @db.VarChar(15) /// USER | ROLE | REQUESTER_PICK | PREPARER_MAPPING | PREPARER_MAPPING_PICK | SUPERIOR | DEPARTMENT_HEAD | BP_PIC
+  ApproverType      String  @db.VarChar(30) /// USER | ROLE | REQUESTER_PICK | PREPARER_MAPPING | PREPARER_MAPPING_PICK | SUPERIOR | DEPARTMENT_HEAD | BP_PIC
   ApproverUserId    BigInt?
   ApproverRoleId    Int? /// for ROLE and REQUESTER_PICK (candidate pool)
   PicRole           String? @db.VarChar(20) /// for BP_PIC: which PIC role of the document's BP (e.g. INVOICE_RECEIVER)

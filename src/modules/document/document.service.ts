@@ -32,12 +32,14 @@ export class DocumentService {
         r.history(d.id),
         this.isBp ? Promise.resolve([]) : new ApprovalRepository(q).history(d.id),
       ])
+      const participants = d.docType === 'RFQ' && !this.isBp ? await r.rfqParticipants(d.id) : undefined
       return {
         ...header,
         id: d.publicId,
         isOwner: ownerUserId === this.actor.id,
         detail,
         lines,
+        participants,
         history,
         approvals,
         actableTaskIds: actable.map((t) => t.publicId),

@@ -114,7 +114,13 @@ export async function restoreDocument(q: Queryable, actor: WfActor, id: number) 
  */
 export async function canView(q: Queryable, actor: WfActor, d: DocRow) {
   const repo = new DocumentRepository(q)
-  if (actor.userType === 'BP') return !d.isDeleted && d.bpId != null && PORTAL_DOC_TYPES.has(d.docType) && (await repo.bpIdsOfUser(actor.id)).includes(d.bpId)
+  if (actor.userType === 'BP') {
+    if (d.isDeleted) return false
+    const mine = await repo.bpIdsOfUser(actor.id)
+    // RFQs have many invited vendors and no single BpId: visible to the invited ones only
+    if (d.docType === 'RFQ') return (await q.query(`SELECT 1 FROM tr_rfq_participant WHERE "RfqId"=$1 AND "BpId" = ANY($2::bigint[])`, [d.id, mine])).length > 0
+    return d.bpId != null && PORTAL_DOC_TYPES.has(d.docType) && mine.includes(d.bpId)
+  }
   if (actor.userType !== 'INTERNAL') return true // SYSTEM jobs
   if (d.isDeleted && !has(actor, 'DOC.VIEW_DELETED')) return false
   if (d.ownerUserId === actor.id || d.createdBy === actor.id || has(actor, 'DOC.VIEW_ALL')) return true

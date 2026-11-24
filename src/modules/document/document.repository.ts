@@ -153,6 +153,16 @@ export class DocumentRepository {
       [docId, actorId, body, visibility]))[0]
   }
 
+  /** Vendors invited to an RFQ (internal view only: vendors must not see their competitors). */
+  rfqParticipants(rfqId: number) {
+    return this.q.query(
+      `SELECT bp."PublicId" AS id, bp."BpCode" AS "bpCode", bp."LegalName" AS "legalName", p."InvitationStatus" AS "invitationStatus"
+         FROM tr_rfq_participant p JOIN mst_business_partner bp ON bp."Id" = p."BpId"
+        WHERE p."RfqId"=$1 ORDER BY bp."BpCode"`,
+      [rfqId]
+    )
+  }
+
   async subtypeDetail(docId: number, docType: string) {
     const viewByType: Record<string, string> = {
       PR: 'vw_doc_pr',

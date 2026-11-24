@@ -175,7 +175,7 @@ export const quoCreate = z
   .object({
     title: z.string().trim().min(2).max(200),
     rfqId: z.string().uuid(),
-    bpId: z.string().uuid(),
+    bpId: z.string().uuid().optional(), // BP users: defaults to their own BP
     bpReference: z.string().trim().max(50).nullable().optional(),
     validUntil: isoDate.nullable().optional(),
     currencyCode: z.string().trim().length(3).default('IDR'),

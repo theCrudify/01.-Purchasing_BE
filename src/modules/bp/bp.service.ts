@@ -3,7 +3,8 @@ import { notFound } from '../../core/errors'
 import type { ListQuery } from '../../core/list-query'
 import type { Actor } from '../../core/types'
 import { submitForApproval } from '../approval/approval.engine'
-import { assignNumber, createDraft, loadDocument } from '../document/document.core'
+import { assignNumber, changeStatus, createDraft, loadDocument } from '../document/document.core'
+import { DocumentRepository } from '../document/document.repository'
 import { BpRepository } from './bp.repository'
 import type { BpCreate, BpUpdate, SvrCreate } from './bp.schema'
 
@@ -65,6 +66,12 @@ export class BpService {
   submitSvr(publicId: string) {
     return this.db.session(this.actor, async (q) => {
       const d = await loadDocument(q, this.actor, publicId, { lock: true })
+      const docs = new DocumentRepository(q)
+      // the status matrix routes a fresh SVR DRAFT → SUBMITTED (review comes before approval)
+      if (!(await docs.transition(d.docType, d.status, 'PENDING_APPROVAL')) && (await docs.transition(d.docType, d.status, 'SUBMITTED'))) {
+        await changeStatus(q, this.actor, d.id, 'SUBMITTED', { remarks: 'Submitted' })
+        return { status: 'SUBMITTED' }
+      }
       return submitForApproval(q, this.actor, d.id)
     })
   }
