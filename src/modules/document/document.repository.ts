@@ -215,12 +215,14 @@ export class DocumentRepository {
       case 'QUO':
         return this.q.query(
           `SELECT l."Id" AS id, rl."LineNum" AS "lineNum", l."RfqLineId" AS "rfqLineId",
+                  rl."ItemId" AS "itemId", i."Code" AS "itemCode", i."Name" AS "itemName",
                   rl."Description" AS description, u."Code" AS "uomCode",
                   l."Quantity" AS quantity, l."UnitPrice" AS "unitPrice", l."DiscountPercent" AS "discountPercent",
                   l."LineAmount" AS "lineTotal", l."LeadTimeDays" AS "leadTimeDays"
              FROM tr_quotation_line l
              JOIN tr_rfq_line rl ON rl."Id" = l."RfqLineId"
              JOIN mst_uom u ON u."Id" = rl."UomId"
+             LEFT JOIN mst_item i ON i."Id" = rl."ItemId"
             WHERE l."QuotationId"=$1 ORDER BY rl."LineNum"`,
           [docId]
         )

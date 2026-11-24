@@ -313,6 +313,20 @@ async function main() {
       ['Surat Jalan SJ-SMS-2611-0451', 'Kepada: Gudang Cikarang', 'Kertas HVS A4 80gsm  200 rim', 'Pulpen Gel Hitam  30 box', 'Map Plastik  40 pak', 'Diterima baik, kendaraan B 9123 KXT'])
     await attach(finance, await byTitle(finance, '/ap-invoices', 'Invoice ATK Q4 - Sumber Makmur'), 'INV-SMS-2611-0778.pdf', 'INVOICE', 'Invoice asli vendor',
       ['INVOICE INV/SMS/2611/0778', 'PT Sumber Makmur Sentosa', 'Ref PO ATK Kantor Q4 2026', 'Faktur Pajak 010.000-26.00012345', 'Jatuh tempo 30 hari'])
+    // outgoing payments for an approved cash advance and reimbursement (finance pays, manager + director release)
+    const banks = (await finance.get('/company-banks')).data as Json[]
+    for (const [purpose, path, title, payTitle] of [
+      ['CASH_ADVANCE', '/cash-advances', 'Kas Bon Kunjungan Vendor Surabaya', 'Pencairan Kas Bon Surabaya'],
+      ['REIMBURSEMENT', '/reimbursements', 'Reimburse BBM & Tol Kunjungan Vendor', 'Pembayaran Reimburse BBM & Tol'],
+    ] as const) {
+      if ((await list(finance, `/payments?purpose=${purpose}`)).length) continue
+      const target = await byTitle(finance, path, title)
+      if (!target) continue
+      const amount = Number((await finance.get(`/documents/${target}`)).data.totalAmount)
+      const payId = await createDoc(finance, '/payments', { title: payTitle, purpose, targetDocId: target, companyBankAccountId: banks[0].id, paymentMethod: 'TRANSFER', plannedDate: day(1), amountApplied: amount, bankReference: `TRF-${purpose.slice(0, 3)}-2611` })
+      await decide(approver, payId)
+      await decide(admin, payId)
+    }
     if (!(await list(approver, '/reassignments')).length) {
       const mine = (await list(approver, '/approvals/tasks')).filter((t) => t.status === 'PENDING')
       if (mine.length) {
