@@ -130,11 +130,14 @@ async function run() {
         [userId, passwordHash]
       )
 
-      // 3. Business Partner
-      const bpRes = await c.query(
+      // 3. Business Partner ("BpCode" has no unique index, so ON CONFLICT can't target it: update-else-insert)
+      const existing = await c.query(
+        `UPDATE mst_business_partner SET "OperationalStatus"='ACTIVE',"OnboardingStatus"='VERIFIED' WHERE "BpCode"=$1 RETURNING "Id"`,
+        [v.bpCode]
+      )
+      const bpRes = existing.rows.length ? existing : await c.query(
         `INSERT INTO mst_business_partner ("BpCode","LegalName","TradeName","EntityType","TaxId","IsSupplier","CountryCode","DefaultCurrencyCode","OnboardingStatus","OperationalStatus","Email")
          VALUES ($1,$2,$3,$4,$5,true,'ID','IDR','VERIFIED','ACTIVE',$6)
-         ON CONFLICT ("BpCode") DO UPDATE SET "OperationalStatus"='ACTIVE',"OnboardingStatus"='VERIFIED'
          RETURNING "Id"`,
         [v.bpCode, v.legalName, v.tradeName, v.entityType, v.taxId, v.email.toLowerCase()]
       )
