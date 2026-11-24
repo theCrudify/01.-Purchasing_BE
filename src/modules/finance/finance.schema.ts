@@ -309,7 +309,7 @@ export const payInstallments = z
     targetDocId: z.string().uuid(),
     companyBankAccountId: z.coerce.number().int().positive(),
     paymentMethod: z.enum(['TRANSFER', 'CASH', 'GIRO']).default('TRANSFER'),
-    autoPayFirst: z.boolean().default(false),
+    autoPayFirst: z.boolean().optional(), // ignored: installments always need approval before any payout (kept so older clients still validate)
     schedule: z
       .array(
         z.object({

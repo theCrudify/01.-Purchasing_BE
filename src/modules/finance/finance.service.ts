@@ -395,18 +395,21 @@ export class FinanceService {
               ? 'REIMBURSEMENT'
               : null
       if (!purpose) throw new HttpError(422, 'RULE_VIOLATION', 'Target must be an AP Invoice, Cash Advance, or Reimbursement')
+      // only a document that already passed its own approval may be paid
+      if (!['APPROVED', 'PAYMENT_PROCESSING', 'PARTIALLY_PAID'].includes(tgt.status))
+        throw new HttpError(422, 'RULE_VIOLATION', `${tgt.docNo ?? tgt.docType} is ${tgt.status}; only approved documents can be paid in installments`)
 
       const [sumRow] = await q.query<{ applied: string }>(
         `SELECT COALESCE(SUM(pa."AmountApplied"), 0) AS applied
            FROM tr_payment_allocation pa
            JOIN tr_document pd ON pd."Id" = pa."PaymentId"
-          WHERE pa."TargetDocumentId"=$1 AND NOT pd."IsDeleted" AND pd."Status" IN ('POSTED','COMPLETED')`,
+          WHERE pa."TargetDocumentId"=$1 AND NOT pd."IsDeleted" AND pd."Status" NOT IN ('CANCELLED','REJECTED')`,
         [tgt.id]
-      )
+      ) // every live payment (pending, approved, sent, paid) already claims its share: scheduling twice must not overpay
       const total = Number(tgt.totalAmount ?? 0)
       const applied = Math.max(Number(tgt.appliedAmount ?? 0), Number(sumRow?.applied ?? 0))
       const remaining = Math.max(0, total - applied)
-      if (remaining <= 0) throw new HttpError(422, 'RULE_VIOLATION', 'Document is already fully paid')
+      if (remaining <= 0) throw new HttpError(422, 'RULE_VIOLATION', 'Document is already fully paid or fully scheduled')
 
       const totalPct = d.schedule.reduce((acc, s) => acc + s.percent, 0)
       if (totalPct > 100.01) throw new HttpError(422, 'RULE_VIOLATION', 'Total installment percentage cannot exceed 100%')
@@ -440,15 +443,9 @@ export class FinanceService {
           remarks: stage.label,
         })
         const docNo = await assignNumber(q, this.actor, doc.id)
-        await changeStatus(q, this.actor, doc.id, 'APPROVED', { remarks: 'Auto-approved per agreement installment schedule' })
-
-        let finalStatus = 'APPROVED'
-        if (d.autoPayFirst && idx === 0) {
-          const res = await this.runMufgOnPayment(q, doc.id, 'APPROVED', 'AUTO')
-          finalStatus = res.status
-        }
-
-        created.push({ id: doc.publicId, docNo, label: stage.label, amount: amt, status: finalStatus })
+        // every installment is a normal payment: it goes through the PAY approval template (maker-checker) before MUFG can run it
+        await submitForApproval(q, this.actor, doc.id)
+        created.push({ id: doc.publicId, docNo, label: stage.label, amount: amt, status: 'PENDING_APPROVAL' })
       }
 
       return { targetDocNo: tgt.docNo, installments: created }
