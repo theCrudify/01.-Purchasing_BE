@@ -32,5 +32,5 @@ TEST_DATABASE_URL=postgresql://postgres@localhost:54329/purchasing npm test
 
 ## Deploy gratis
 - **DB — Neon free**: terapkan migrasi berurutan `for f in db/migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done`, lalu `npm run seed:admin`.
-- **BE — Vercel Hobby (disarankan)**: project baru dari repo ini (framework Hono, entry `src/index.ts`). Env: `DATABASE_URL`, `JWT_SECRET`, `ALLOWED_ORIGINS` (URL FE), `APP_URL` (URL FE), `CRON_SECRET`, `COOKIE_SECURE=true`, opsional `RESEND_API_KEY`, `MAIL_FROM`, `ENTRA_*`.
-- **BE — Cloudflare Workers (alternatif)**: `npx wrangler secret put DATABASE_URL` / `JWT_SECRET`, `npm run deploy:cf`. ⚠️ Free plan = 10 ms CPU/request; hashing password saat login bisa melewati batas.
+- **BE — Vercel Hobby (alternatif)**: project baru dari repo ini (framework Hono, entry `src/index.ts`). Env: `DATABASE_URL`, `JWT_SECRET`, `ALLOWED_ORIGINS` (URL FE), `APP_URL` (URL FE), `CRON_SECRET`, `COOKIE_SECURE=true`, opsional `RESEND_API_KEY`, `MAIL_FROM`, `ENTRA_*`.
+- **BE — Cloudflare Workers (dipakai)**: `npx wrangler secret put DATABASE_URL` / `JWT_SECRET` / `CRON_SECRET`, lalu `npm run deploy:cf`. `ALLOWED_ORIGINS`, `APP_URL`, `COOKIE_SECURE` & jadwal cron (`[triggers]`, handler `scheduled` di `src/index.ts`) ada di `wrangler.toml`. ⚠️ Free plan = 10 ms CPU/request; login (bcrypt) sudah diuji lolos.
