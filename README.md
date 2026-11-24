@@ -25,6 +25,7 @@ npm install
 cp .env.example .env                    # DATABASE_URL, JWT_SECRET, ALLOWED_ORIGINS (= origin FE)
 ./db/reset-local.sh purchasing                # Postgres lokal :54329
 ADMIN_EMAIL=admin@purchasing.local ADMIN_PASSWORD='ganti-ini-12char' npm run seed:admin
+npm run seed:demo                           # Buat akun demo internal & vendor (pw: Password123!)
 npm run dev                             # http://localhost:3918
 TEST_DATABASE_URL=postgresql://postgres@localhost:54329/purchasing npm test
 ```

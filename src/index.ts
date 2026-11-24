@@ -32,4 +32,9 @@ for (const g of [identity, master, workflow, bp, procurement]) {
 app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Route not found' } }, 404))
 app.onError(errorHandler)
 
-export default app
+// Workers: fetch serves HTTP; scheduled (wrangler.toml [triggers]) replays the daily cron route with the secret.
+export default {
+  fetch: app.fetch,
+  scheduled: (_e: ScheduledController, env: AppEnv['Bindings'], ctx: ExecutionContext) =>
+    ctx.waitUntil(Promise.resolve(app.fetch(new Request('https://cron.internal/api/cron/daily', { headers: { 'x-cron-secret': env.CRON_SECRET ?? '' } }), env, ctx))),
+}

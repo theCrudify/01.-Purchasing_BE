@@ -3,8 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Production values; local `wrangler dev` overrides them with .dev.vars.
 [vars]
-ALLOWED_ORIGINS = "http://localhost:3917"   # comma list; set the Vercel URL in the dashboard / [env.production]
-COOKIE_SECURE = "false"
+ALLOWED_ORIGINS = "https://purchasing-fe.vercel.app"   # comma list of FE origins
+APP_URL = "https://purchasing-fe.vercel.app"
+COOKIE_SECURE = "true"
 
-# Secrets (never in this file):  wrangler secret put DATABASE_URL | JWT_SECRET
+[triggers]
+crons = ["0 23 * * *"]   # 06:00 WIB → /api/cron/daily
+
+# Secrets (never in this file):  wrangler secret put DATABASE_URL | JWT_SECRET | CRON_SECRET
