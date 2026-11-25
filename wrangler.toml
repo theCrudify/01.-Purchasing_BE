@@ -9,6 +9,10 @@ ALLOWED_ORIGINS = "https://purchasing-fe.vercel.app"   # comma list of FE origin
 APP_URL = "https://purchasing-fe.vercel.app"
 COOKIE_SECURE = "true"
 
+# Keeps request logs + outcomes (e.g. exceededCpu) in the dashboard, so failed logins can be diagnosed after the fact.
+[observability]
+enabled = true
+
 [triggers]
 crons = ["0 23 * * *"]   # 06:00 WIB → /api/cron/daily
 

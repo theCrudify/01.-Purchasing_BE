@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs'
-import { BCRYPT_COST } from '../password-reset/password-reset.service'
+import { BCRYPT_COST, hashPassword } from '../password-reset/password-reset.service'
 import type { Db } from '../../core/db'
 import { HttpError, unauthorized } from '../../core/errors'
 import { AuthRepository } from './auth.repository'
@@ -9,9 +9,9 @@ import type { LoginInput } from './auth.schema'
 const SYSTEM = { id: null, userType: 'SYSTEM' } as const
 const MAX_FAILS = 5
 const MAX_LOCK_CYCLES = 5
-// Real hash (made once per isolate) so unknown e-mails cost the same as wrong passwords: no user enumeration by timing.
-let dummy: string | undefined
-const DUMMY_HASH = () => (dummy ??= bcrypt.hashSync('dummy-password', BCRYPT_COST))
+// Real cost-4 hash (= BCRYPT_COST) so unknown e-mails cost the same as wrong passwords: no user enumeration by timing.
+// A constant, not hashSync: hashing per isolate doubled the CPU of that request on Workers.
+const DUMMY_HASH = () => '$2b$04$BouSK9TtUvropYIdWbdvjuoCbEMCS4BCLJdT/1cwS.63jQBhKXZuC'
 
 const GENERIC = () => unauthorized('Invalid email or password')
 const addSec = (s: number) => new Date(Date.now() + s * 1000)
@@ -39,19 +39,17 @@ export class AuthService {
         if (until) await repo.logActivity({ userId: cred.UserId, email: input.email, action: 'LOCKED_OUT', ip, ua })
         return fail('WRONG_PASSWORD', cred.UserId)
       }
-      await repo.resetFailures(cred.UserId)
+      // Hashes made at another cost are re-hashed at the current one, so a cost change reaches existing users on their next login.
+      await repo.resetFailures(cred.UserId, bcrypt.getRounds(cred.PasswordHash) === BCRYPT_COST ? null : await hashPassword(input.password))
       return { fail: false as const, ...(await this.openSession(repo, cred.UserId, ip, ua)) }
     }).then((r) => { if (r.fail) throw GENERIC(); return r })
   }
 
   /** New session + refresh token + access token; shared by password login and SSO. */
   async openSession(repo: AuthRepository, userId: number, ip: string | null, ua: string | null, method = 'PASSWORD') {
-    const sid = await repo.createSession(userId, ip, ua, addSec(SESSION_MAX_S), method)
     const refresh = newRefreshToken()
-    await repo.addRefreshToken(sid, await sha256Hex(refresh), addSec(REFRESH_TTL_S))
-    await repo.logActivity({ userId, sessionId: sid, action: 'LOGIN', ip, ua, detail: method })
-    const pub = await repo.publicId(userId)
-    return { access: await signAccessToken(this.jwtSecret, { sub: pub, sid }), refresh }
+    const s = await repo.openSession(userId, ip, ua, addSec(SESSION_MAX_S), method, await sha256Hex(refresh), addSec(REFRESH_TTL_S))
+    return { access: await signAccessToken(this.jwtSecret, { sub: s.PublicId, sid: s.Id }), refresh, userType: s.UserType }
   }
 
   /** SSO login: an Entra identity may sign in only as an existing ACTIVE INTERNAL user (bound on first use, never auto-created). */

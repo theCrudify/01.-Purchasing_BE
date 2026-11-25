@@ -46,7 +46,7 @@ async function run() {
 
     // 2. Demo Users
     console.log('2. Creating demo user accounts...')
-    const pwHash = await bcrypt.hash(DEMO_PW, 8)
+    const pwHash = await bcrypt.hash(DEMO_PW, 4) // = BCRYPT_COST (demo only)
 
     async function ensureUser(email: string, name: string, userType: 'INTERNAL' | 'BP', roleId?: number) {
       const uRes = await c.query(

@@ -10,6 +10,7 @@ import type { LoginInput } from './auth.schema'
 import { entraEnabled, finishFlow, startFlow } from './auth.entra'
 
 const REFRESH_COOKIE = 'purchasing_rt'
+const SESSION_COOKIE = 'purchasing_sess'
 const FLOW_COOKIE = 'purchasing_oidc'
 const safeNext = (n: string | undefined) => (n && n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/\\') ? n : '/dashboard')
 const client = (c: Context<AppEnv>) => [clientIp(c), c.req.header('user-agent') ?? null] as const
@@ -19,13 +20,15 @@ function setTokens(c: Context<AppEnv>, t: { access: string; refresh: string }) {
   const base = { httpOnly: true, secure: c.get('cfg').COOKIE_SECURE !== 'false', sameSite: 'Lax' as const }
   setCookie(c, ACCESS_COOKIE, t.access, { ...base, path: '/', maxAge: ACCESS_TTL_S })
   setCookie(c, REFRESH_COOKIE, t.refresh, { ...base, path: '/api/auth', maxAge: REFRESH_TTL_S })
+  // No secret inside: the FE page gate never sees the refresh cookie (path /api/auth), so this tells it a refresh is still possible.
+  setCookie(c, SESSION_COOKIE, '1', { ...base, path: '/', maxAge: REFRESH_TTL_S })
 }
 
 export const authController = {
   async login(c: Context<AppEnv>, input: LoginInput) {
     const t = await svc(c).login(input, clientIp(c), c.req.header('user-agent') ?? null)
     setTokens(c, t)
-    return c.json({ ok: true })
+    return c.json({ ok: true, data: { userType: t.userType } }) // saves the FE a /auth/me round trip to pick the landing page
   },
   async refresh(c: Context<AppEnv>) {
     const rt = getCookie(c, REFRESH_COOKIE)
@@ -37,6 +40,7 @@ export const authController = {
     await svc(c).logout(c.get('actor'))
     deleteCookie(c, ACCESS_COOKIE, { path: '/' })
     deleteCookie(c, REFRESH_COOKIE, { path: '/api/auth' })
+    deleteCookie(c, SESSION_COOKIE, { path: '/' })
     return c.json({ ok: true })
   },
   providers(c: Context<AppEnv>) {

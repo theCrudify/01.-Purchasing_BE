@@ -16,18 +16,23 @@ export class AuthRepository {
          FROM mst_user u JOIN sys_user_credential c ON c."UserId" = u."Id" WHERE lower(u."Email") = $1`, [email]))[0]
   }
 
-  async publicId(userId: number) { return (await this.q.query<{ PublicId: string }>(`SELECT "PublicId" FROM mst_user WHERE "Id"=$1`, [userId]))[0]!.PublicId }
-
   recordFailure(userId: number, failed: number, lockoutCount: number, lockoutUntil: Date | null) {
     return this.q.query(`UPDATE sys_user_credential SET "FailedLoginCount"=$2,"LockoutCount"=$3,"LockoutUntil"=$4,"UpdatedAt"=now() WHERE "UserId"=$1`, [userId, failed, lockoutCount, lockoutUntil])
   }
   lockUser(userId: number) { return this.q.query(`UPDATE mst_user SET "Status"='LOCKED',"StatusReason"='Too many failed logins',"UpdatedAt"=now() WHERE "Id"=$1`, [userId]) }
-  resetFailures(userId: number) { return this.q.query(`UPDATE sys_user_credential SET "FailedLoginCount"=0,"LockoutCount"=0,"LockoutUntil"=NULL,"UpdatedAt"=now() WHERE "UserId"=$1`, [userId]) }
+  /** Successful login: clear the counters and, when given, store the password re-hashed at the current cost. */
+  resetFailures(userId: number, rehash: string | null = null) {
+    return this.q.query(`UPDATE sys_user_credential SET "FailedLoginCount"=0,"LockoutCount"=0,"LockoutUntil"=NULL,"PasswordHash"=COALESCE($2,"PasswordHash"),"UpdatedAt"=now() WHERE "UserId"=$1`, [userId, rehash])
+  }
 
-  async createSession(userId: number, ip: string | null, ua: string | null, expiresAt: Date, method = 'PASSWORD') {
-    return (await this.q.query<{ Id: number }>(
-      `INSERT INTO sys_user_session ("UserId","AuthMethod","IpAddress","UserAgent","ExpiresAt") VALUES ($1,$5,$2,left($3,500),$4) RETURNING "Id"`,
-      [userId, ip, ua, expiresAt, method]))[0]!.Id
+  /** Session + first refresh token + LOGIN activity in one round trip; returns what the access token and the FE need. */
+  async openSession(userId: number, ip: string | null, ua: string | null, expiresAt: Date, method: string, refreshHashHex: string, refreshExpiresAt: Date) {
+    return (await this.q.query<{ Id: number; PublicId: string; UserType: string }>(
+      `WITH s AS (INSERT INTO sys_user_session ("UserId","AuthMethod","IpAddress","UserAgent","ExpiresAt") VALUES ($1,$5::text,$2::text,left($3::text,500),$4) RETURNING "Id"),
+            t AS (INSERT INTO sys_refresh_token ("SessionId","TokenHash","ExpiresAt") SELECT "Id", decode($6,'hex'), $7 FROM s),
+            a AS (INSERT INTO hist_user_activity ("UserId","SessionId","Action","IpAddress","UserAgent","Detail") SELECT $1, "Id", 'LOGIN', left($2::text,45), left($3::text,500), $5::text FROM s)
+       SELECT s."Id", u."PublicId", u."UserType" FROM s JOIN mst_user u ON u."Id"=$1`,
+      [userId, ip, ua, expiresAt, method, refreshHashHex, refreshExpiresAt]))[0]!
   }
   addRefreshToken(sessionId: number, hashHex: string, expiresAt: Date) {
     return this.q.query(`INSERT INTO sys_refresh_token ("SessionId","TokenHash","ExpiresAt") VALUES ($1, decode($2,'hex'), $3)`, [sessionId, hashHex, expiresAt])
@@ -71,15 +76,15 @@ export class AuthRepository {
     return this.q.query(`UPDATE sys_user_credential SET "ExternalAuthId"=$2,"UpdatedAt"=now() WHERE "UserId"=$1 AND "ExternalAuthId" IS NULL`, [userId, oid])
   }
 
-  /** Live session + ACTIVE user + effective permissions in two small queries. */
+  /** Live session + ACTIVE user + effective permissions in one query (runs on every authenticated request). */
   async loadActor(sessionId: number): Promise<Actor | null> {
-    const u = (await this.q.query<{ Id: number; PublicId: string; UserType: Actor['userType']; Email: string; DisplayName: string }>(
-      `SELECT u."Id",u."PublicId",u."UserType",u."Email",u."DisplayName" FROM sys_user_session s JOIN mst_user u ON u."Id"=s."UserId"
+    const u = (await this.q.query<{ Id: number; PublicId: string; UserType: Actor['userType']; Email: string; DisplayName: string; Perms: string[] }>(
+      `SELECT u."Id",u."PublicId",u."UserType",u."Email",u."DisplayName",
+              ARRAY(SELECT DISTINCT p."Code"::text FROM mst_user_role ur JOIN mst_role r ON r."Id"=ur."RoleId" AND r."IsActive" AND NOT r."IsDeleted"
+                      JOIN mst_role_permission rp ON rp."RoleId"=r."Id" JOIN mst_permission p ON p."Id"=rp."PermissionId" WHERE ur."UserId"=u."Id") AS "Perms"
+         FROM sys_user_session s JOIN mst_user u ON u."Id"=s."UserId"
         WHERE s."Id"=$1 AND s."EndedAt" IS NULL AND s."ExpiresAt" > now() AND u."Status"='ACTIVE'`, [sessionId]))[0]
     if (!u) return null
-    const perms = await this.q.query<{ Code: string }>(
-      `SELECT DISTINCT p."Code" FROM mst_user_role ur JOIN mst_role r ON r."Id"=ur."RoleId" AND r."IsActive" AND NOT r."IsDeleted"
-         JOIN mst_role_permission rp ON rp."RoleId"=r."Id" JOIN mst_permission p ON p."Id"=rp."PermissionId" WHERE ur."UserId"=$1`, [u.Id])
-    return { id: Number(u.Id), publicId: u.PublicId, userType: u.UserType, email: u.Email, displayName: u.DisplayName, sessionId: sessionId, permissions: new Set(perms.map((p) => p.Code)) }
+    return { id: Number(u.Id), publicId: u.PublicId, userType: u.UserType, email: u.Email, displayName: u.DisplayName, sessionId: sessionId, permissions: new Set(u.Perms) }
   }
 }

@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
+import bcrypt from 'bcryptjs'
 import { DB_URL, client, ensureUser, sql } from './helpers'
 
 describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
@@ -12,7 +13,17 @@ describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
     const a = client()
     expect((await a.login('admin@test.local', 'wrong')).status).toBe(401)
     expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
+    const login = await a.login('admin@test.local', 'Secret-pass-123')
+    expect(login.json.data.userType).toBe('INTERNAL')
+    // a hash stored at another cost is re-hashed at BCRYPT_COST on login and still verifies
+    await sql(`UPDATE sys_user_credential SET "PasswordHash"=$1 WHERE "UserId"=(SELECT "Id" FROM mst_user WHERE "Email"='admin@test.local')`, [await bcrypt.hash('Secret-pass-123', 5)])
+    expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
+    const [h] = await sql(`SELECT "PasswordHash" FROM sys_user_credential WHERE "UserId"=(SELECT "Id" FROM mst_user WHERE "Email"='admin@test.local')`)
+    expect(bcrypt.getRounds(h.PasswordHash)).toBe(4)
+    expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
     expect((await a.get('/api/auth/me')).json.data.email).toBe('admin@test.local')
+    expect((await a.get('/api/auth/me')).json.data.permissions.length).toBeGreaterThan(0) // loadActor: perms come back as an array
+    expect(a.jar.has('purchasing_sess')).toBe(true) // FE page gate relies on it
 
     for (const [code, name] of [['T-FIN', 'Finance'], ['T-PUR', 'Purchasing'], ['T-IT', 'Information Tech']]) {
       expect((await a.post('/api/departments', { code, name })).status).toBe(201)
@@ -39,6 +50,7 @@ describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
 
     expect((await a.post('/api/auth/refresh')).status).toBe(200)
     expect((await a.post('/api/auth/logout')).status).toBe(200)
+    expect(a.jar.has('purchasing_sess')).toBe(false)
     expect((await a.get('/api/departments')).status).toBe(401)
   })
 

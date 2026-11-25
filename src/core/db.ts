@@ -35,10 +35,9 @@ export function createDb(connectionString: string): Db {
       const client = await pool.connect()
       const q: Queryable = { query: async (sql, params = []) => (await client.query(sql, params as any[])).rows }
       try {
-        await client.query('BEGIN')
         const ctx: Record<string, string> = { 'purchasing.user_id': actor.id == null ? '' : String(actor.id), 'purchasing.user_type': actor.userType, ...extra }
-        const keys = Object.keys(ctx)
-        await client.query(`SELECT ${keys.map((_, i) => `set_config($${i * 2 + 1}, $${i * 2 + 2}, true)`).join(', ')}`, keys.flatMap((k) => [k, ctx[k]]))
+        // BEGIN + context in one simple-protocol round trip (it takes no $n params, hence escapeLiteral).
+        await client.query(`BEGIN; SELECT ${Object.entries(ctx).map(([k, v]) => `set_config(${pg.escapeLiteral(k)}, ${pg.escapeLiteral(v)}, true)`).join(', ')}`)
         const out = await fn(q)
         await client.query('COMMIT')
         return out
