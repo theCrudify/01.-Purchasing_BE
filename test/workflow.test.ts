@@ -79,7 +79,9 @@ describe.skipIf(!DB_URL)('workflow: document core + approval engine (real Postgr
     expect(view.json.data.history.map((h: any) => h.toStatus)).toEqual(['DRAFT', 'PENDING_APPROVAL', 'APPROVED'])
     expect(view.json.data.approvals).toHaveLength(2)
     expect((await c.req!.get('/notifications?unread=true')).json.data.some((n: any) => n.eventType === 'APPROVAL_APPROVED')).toBe(true)
-    expect((await c.req!.get('/dashboard')).json.data.myDocuments.length).toBeGreaterThan(0)
+    const dash = (await c.req!.get('/dashboard')).json.data
+    expect(dash.myDocuments.length).toBeGreaterThan(0)
+    expect(dash.monthly).toHaveLength(6) // empty months included, so the chart always has 6 bars
   })
 
   it('return → resubmit (round 2) → reject; requester cannot approve own; delete rules', async () => {

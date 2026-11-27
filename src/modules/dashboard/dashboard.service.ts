@@ -14,6 +14,7 @@ export class DashboardService {
         pendingApprovals: await new ApprovalConfigRepository(q).inboxCount(this.actor.id),
         unreadNotifications: await new NotificationRepository(q).unread(this.actor.id),
         myDocuments: await r.myDocuments(this.actor.id),
+        monthly: await r.myMonthly(this.actor.id),
         recentNotifications: await r.recentNotifications(this.actor.id),
       }
     })

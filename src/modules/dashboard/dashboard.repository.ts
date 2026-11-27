@@ -8,6 +8,17 @@ export class DashboardRepository {
       `SELECT "DocType" AS "docType", "Status" AS status, count(*)::int AS n FROM tr_document
         WHERE "OwnerUserId"=$1 AND NOT "IsDeleted" GROUP BY 1,2 ORDER BY 1,2`, [userId])
   }
+  /** Last 6 months (DocDate) incl. empty ones, bucketed like the dashboard: draft / pending / approved. */
+  myMonthly(userId: number) {
+    return this.q.query<{ month: string; draft: number; pending: number; approved: number }>(
+      `SELECT to_char(m, 'YYYY-MM') AS month,
+              count(d."Id") FILTER (WHERE d."Status" IN ('DRAFT','RETURNED','REVISION_REQUIRED'))::int AS draft,
+              count(d."Id") FILTER (WHERE d."Status" IN ('PENDING_APPROVAL','SUBMITTED'))::int AS pending,
+              count(d."Id") FILTER (WHERE d."Status" IN ('APPROVED','ISSUED','POSTED','PAID'))::int AS approved
+         FROM generate_series(date_trunc('month', current_date) - interval '5 months', date_trunc('month', current_date), interval '1 month') m
+         LEFT JOIN tr_document d ON d."OwnerUserId"=$1 AND NOT d."IsDeleted" AND date_trunc('month', d."DocDate") = m
+        GROUP BY m ORDER BY m`, [userId])
+  }
   recentNotifications(userId: number) {
     return this.q.query(`SELECT "PublicId" AS id, "Title" AS title, "EventType" AS "eventType", "ReadAt" AS "readAt", "CreatedAt" AS "createdAt"
       FROM tr_notification WHERE "RecipientUserId"=$1 ORDER BY "CreatedAt" DESC LIMIT 5`, [userId])
