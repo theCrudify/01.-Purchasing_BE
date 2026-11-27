@@ -1,5 +1,4 @@
-import bcrypt from 'bcryptjs'
-import { BCRYPT_COST, hashPassword } from '../password-reset/password-reset.service'
+import { hashPassword, needsRehash, verifyPassword } from '../../core/password'
 import type { Db } from '../../core/db'
 import { HttpError, unauthorized } from '../../core/errors'
 import { AuthRepository } from './auth.repository'
@@ -9,9 +8,8 @@ import type { LoginInput } from './auth.schema'
 const SYSTEM = { id: null, userType: 'SYSTEM' } as const
 const MAX_FAILS = 5
 const MAX_LOCK_CYCLES = 5
-// Real cost-4 hash (= BCRYPT_COST) so unknown e-mails cost the same as wrong passwords: no user enumeration by timing.
-// A constant, not hashSync: hashing per isolate doubled the CPU of that request on Workers.
-const DUMMY_HASH = () => '$2b$04$BouSK9TtUvropYIdWbdvjuoCbEMCS4BCLJdT/1cwS.63jQBhKXZuC'
+// Real hash at the current ITER so unknown e-mails cost the same as wrong passwords: no user enumeration by timing.
+const DUMMY_HASH = 'pbkdf2$20000$8dffd4478931dafcd2e9904e56115319$99d3a462f2646fb16aead7574814990698e54e5dc4ba2ffa321adc0c1b23297f'
 
 const GENERIC = () => unauthorized('Invalid email or password')
 const addSec = (s: number) => new Date(Date.now() + s * 1000)
@@ -27,11 +25,11 @@ export class AuthService {
         await repo.logActivity({ userId, email: input.email, action: 'LOGIN_FAILED', ip, ua, detail })
         return { fail: true as const } // committed on purpose: throwing would roll the log / counters back
       }
-      if (!cred || !cred.PasswordHash || cred.AuthProvider !== 'LOCAL') { await bcrypt.compare(input.password, DUMMY_HASH()); return fail('UNKNOWN_USER') }
-      if (cred.Status !== 'ACTIVE') { await bcrypt.compare(input.password, DUMMY_HASH()); return fail(`USER_${cred.Status}`, cred.UserId) }
+      if (!cred || !cred.PasswordHash || cred.AuthProvider !== 'LOCAL') { await verifyPassword(input.password, DUMMY_HASH); return fail('UNKNOWN_USER') }
+      if (cred.Status !== 'ACTIVE') { await verifyPassword(input.password, DUMMY_HASH); return fail(`USER_${cred.Status}`, cred.UserId) }
       if (cred.LockoutUntil && cred.LockoutUntil > new Date()) throw new HttpError(429, 'LOCKED_OUT', 'Account temporarily locked, try again later')
 
-      if (!(await bcrypt.compare(input.password, cred.PasswordHash))) {
+      if (!(await verifyPassword(input.password, cred.PasswordHash))) {
         let fails = cred.FailedLoginCount + 1, cycles = cred.LockoutCount, until: Date | null = null
         if (fails >= MAX_FAILS) { cycles++; fails = 0; until = addSec((15 + 5 * (cycles - 1)) * 60) } // 15 + 5×(n−1) minutes
         await repo.recordFailure(cred.UserId, fails, cycles, until)
@@ -39,8 +37,8 @@ export class AuthService {
         if (until) await repo.logActivity({ userId: cred.UserId, email: input.email, action: 'LOCKED_OUT', ip, ua })
         return fail('WRONG_PASSWORD', cred.UserId)
       }
-      // Hashes made at another cost are re-hashed at the current one, so a cost change reaches existing users on their next login.
-      await repo.resetFailures(cred.UserId, bcrypt.getRounds(cred.PasswordHash) === BCRYPT_COST ? null : await hashPassword(input.password))
+      // bcrypt / other-ITER hashes are re-hashed at the current scheme, so a change reaches existing users on their next login.
+      await repo.resetFailures(cred.UserId, needsRehash(cred.PasswordHash) ? await hashPassword(input.password) : null)
       return { fail: false as const, ...(await this.openSession(repo, cred.UserId, ip, ua)) }
     }).then((r) => { if (r.fail) throw GENERIC(); return r })
   }

@@ -3,7 +3,7 @@
 // and comprehensive transactions (PR, RFQ, Quotation, PO, Contract, GR, Invoice, Payment, Cash Advance, Approvals, Notifications)
 // so all demo personas have rich, interactive data to explore.
 import pg from 'pg'
-import bcrypt from 'bcryptjs'
+import { hashPassword } from '../src/core/password'
 
 const { DATABASE_URL } = process.env
 if (!DATABASE_URL) throw new Error('Set DATABASE_URL in .env')
@@ -46,7 +46,7 @@ async function run() {
 
     // 2. Demo Users
     console.log('2. Creating demo user accounts...')
-    const pwHash = await bcrypt.hash(DEMO_PW, 4) // = BCRYPT_COST (demo only)
+    const pwHash = await hashPassword(DEMO_PW)
 
     async function ensureUser(email: string, name: string, userType: 'INTERNAL' | 'BP', roleId?: number) {
       const uRes = await c.query(

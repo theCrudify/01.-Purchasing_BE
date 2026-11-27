@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import bcrypt from 'bcryptjs'
+import { ITER } from '../src/core/password'
 import { DB_URL, client, ensureUser, sql } from './helpers'
 
 describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
@@ -15,11 +16,11 @@ describe.skipIf(!DB_URL)('auth + department (real Postgres)', () => {
     expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
     const login = await a.login('admin@test.local', 'Secret-pass-123')
     expect(login.json.data.userType).toBe('INTERNAL')
-    // a hash stored at another cost is re-hashed at BCRYPT_COST on login and still verifies
+    // a legacy bcrypt hash still verifies and is re-hashed to the current pbkdf2 scheme on login
     await sql(`UPDATE sys_user_credential SET "PasswordHash"=$1 WHERE "UserId"=(SELECT "Id" FROM mst_user WHERE "Email"='admin@test.local')`, [await bcrypt.hash('Secret-pass-123', 5)])
     expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
     const [h] = await sql(`SELECT "PasswordHash" FROM sys_user_credential WHERE "UserId"=(SELECT "Id" FROM mst_user WHERE "Email"='admin@test.local')`)
-    expect(bcrypt.getRounds(h.PasswordHash)).toBe(4)
+    expect(h.PasswordHash).toMatch(new RegExp(`^pbkdf2\\$${ITER}\\$`))
     expect((await a.login('admin@test.local', 'Secret-pass-123')).status).toBe(200)
     expect((await a.get('/api/auth/me')).json.data.email).toBe('admin@test.local')
     expect((await a.get('/api/auth/me')).json.data.permissions.length).toBeGreaterThan(0) // loadActor: perms come back as an array

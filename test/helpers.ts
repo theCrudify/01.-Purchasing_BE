@@ -1,5 +1,5 @@
 import pg from 'pg'
-import bcrypt from 'bcryptjs'
+import { hashPassword } from '../src/core/password'
 import { app } from '../src/index'
 
 /** Integration tests run only when TEST_DATABASE_URL points at a migrated throwaway DB. */
@@ -21,7 +21,7 @@ export async function ensureUser(email: string, password: string, perms: string[
   await sql(`INSERT INTO mst_permission ("Code","Module","Name") SELECT x, split_part(x,'.',1), x FROM unnest($1::text[]) x ON CONFLICT DO NOTHING`, [perms === 'ALL' ? [] : perms])
   await sql(`INSERT INTO mst_role_permission ("RoleId","PermissionId") SELECT $1,"Id" FROM mst_permission WHERE $2::boolean OR "Code" = ANY($3) ON CONFLICT DO NOTHING`, [r.Id, perms === 'ALL', perms === 'ALL' ? [] : perms])
   const [u] = await sql(`INSERT INTO mst_user ("UserType","Email","DisplayName","Status") VALUES ($2,$1,$1,'ACTIVE') ON CONFLICT ("Email") DO UPDATE SET "Status"='ACTIVE' RETURNING "Id"`, [email, userType])
-  await sql(`INSERT INTO sys_user_credential ("UserId","PasswordHash") VALUES ($1,$2) ON CONFLICT ("UserId") DO UPDATE SET "PasswordHash"=EXCLUDED."PasswordHash","FailedLoginCount"=0,"LockoutCount"=0,"LockoutUntil"=NULL`, [u.Id, await bcrypt.hash(password, 4)])
+  await sql(`INSERT INTO sys_user_credential ("UserId","PasswordHash") VALUES ($1,$2) ON CONFLICT ("UserId") DO UPDATE SET "PasswordHash"=EXCLUDED."PasswordHash","FailedLoginCount"=0,"LockoutCount"=0,"LockoutUntil"=NULL`, [u.Id, await hashPassword(password)])
   await sql(`INSERT INTO mst_user_role ("UserId","RoleId") VALUES ($1,$2) ON CONFLICT DO NOTHING`, [u.Id, r.Id])
   return u.Id as number
 }

@@ -1,4 +1,4 @@
-import bcrypt from 'bcryptjs'
+import { hashPassword } from '../../core/password'
 import type { Db, Queryable } from '../../core/db'
 import type { Config } from '../../env'
 import { HttpError } from '../../core/errors'
@@ -12,10 +12,6 @@ const PURPOSE = 'PASSWORD_RESET'
 const MAX_ATTEMPTS = 5
 const RESET_MIN = 15
 export const INVITE_MIN = 30 // DB caps a code's life at 30 minutes
-// shortcut: cost 4 (~1.5 ms, bcrypt's minimum) is DEMO ONLY, chosen to fit the Workers Free 10 ms CPU limit; hashes this weak are cracked fast if the DB leaks.
-// Raise to 12 on Workers Paid before real users: existing hashes are re-hashed at the new cost on each user's next login.
-export const BCRYPT_COST = 4
-export const hashPassword = (p: string) => bcrypt.hash(p, BCRYPT_COST)
 export type Defer = (p: Promise<unknown>) => void
 
 const badCode = () => new HttpError(422, 'INVALID_CODE', 'Invalid or expired code')

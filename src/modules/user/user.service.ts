@@ -1,4 +1,4 @@
-import bcrypt from 'bcryptjs'
+import { hashPassword } from '../../core/password'
 import type { Db, Queryable } from '../../core/db'
 import type { Actor } from '../../core/types'
 import type { Config } from '../../env'
@@ -28,7 +28,7 @@ export class UserService {
 
   /** Internal user in PENDING_ACTIVATION with an unusable password; they get a set-password code by e-mail. */
   async create(input: UserCreate) {
-    const unusable = await bcrypt.hash(newRefreshToken(), 4) // random secret nobody knows; replaced when the user sets a password
+    const unusable = await hashPassword(newRefreshToken()) // random secret nobody knows; replaced when the user sets a password
     const { out, code } = await this.run(async (r, q) => {
       const u = await r.insertInternal(input.email, input.displayName, input.phone, this.actor.id)
       await r.insertCredential(u.Id, unusable)
